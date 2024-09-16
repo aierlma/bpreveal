@@ -81,7 +81,7 @@ runAndCheck ${PIP_BIN} install --no-input modisco-lite
 
 # 1. Install jupyter lab.
 if [ "$INSTALL_JUPYTER" = true ] ; then
-    runAndCheck ${CONDA_BIN} install --yes -c conda-forge jupyterlab pandoc
+    runAndCheck ${CONDA_BIN} install --yes -c conda-forge jupyterlab pandoc notebook
 fi
 
 
