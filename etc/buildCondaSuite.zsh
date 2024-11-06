@@ -123,6 +123,9 @@ echo "export BPREVEAL_KILL_PATH=${BPREVEAL_DIR}/bin"\
     > ${CONDA_PREFIX}/etc/conda/activate.d/bpreveal_bin_activate.sh
 echo "export PATH=\$BPREVEAL_KILL_PATH:\$PATH"\
     >> ${CONDA_PREFIX}/etc/conda/activate.d/bpreveal_bin_activate.sh
+# For matplotlib only.
+echo "export LD_LIBRARY_PATH=${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH}"\
+    >> ${CONDA_PREFIX}/etc/conda/activate.d/bpreveal_bin_activate.sh
 
     # Add the man pages to the environment. (You still have to build them with cd doc && make man)
 echo "export BPREVEAL_MAN_KILL_PATH=${BPREVEAL_DIR}/doc/_build/man"\
@@ -171,7 +174,10 @@ echo "unset BPREVEAL_MAN_KILL_PATH"\
 echo "unset XLA_FLAGS" \
     > ${CONDA_PREFIX}/etc/conda/deactivate.d/cuda_xla_deactivate.sh
 # Remove bpreveal from LD_LIBRARY_PATH.
-echo '\nexport LD_LIBRARY_PATH=$(echo $LD_LIBRARY_PATH | sed "s|$BPREVEAL_KILL_LD_LIB_PATH||" )'\
+echo 'export LD_LIBRARY_PATH=$(echo $LD_LIBRARY_PATH | sed "s|$BPREVEAL_KILL_LD_LIB_PATH||" )'\
+    >> ${CONDA_PREFIX}/etc/conda/deactivate.d/cuda_xla_deactivate.sh
+# Remove Conda environment lib path from LD_LIBRARY_PATH
+echo 'export LD_LIBRARY_PATH=$(echo $LD_LIBRARY_PATH | sed "s|$CONDA_PREFIX/lib:||g")'\
     >> ${CONDA_PREFIX}/etc/conda/deactivate.d/cuda_xla_deactivate.sh
 echo "unset TF_USE_LEGACY_KERAS" \
     > ${CONDA_PREFIX}/etc/conda/deactivate.d/legacy_keras_deactivate.sh

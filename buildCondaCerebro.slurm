@@ -1,4 +1,4 @@
-#!/usr/bin/env zsh
+#!/usr/bin/bash
 #SBATCH --job-name buildBpreveal
 #SBATCH --ntasks=3
 #SBATCH --nodes=1
@@ -22,7 +22,7 @@ conda deactivate
 # CHANGE this to your own shell rc file, or it may
 # work without this line for you.
 
-export SHELL_RC_FILE=/home/gq2899/.zshrc
+export SHELL_RC_FILE=/home/gq2899/.bashrc
 # The location where you cloned the git repository.
 # CHANGE to reflect your directory.
 export BPREVEAL_DIR=/home/gq2899/bin/bpreveal
