@@ -19,9 +19,9 @@
 
 import csv
 import multiprocessing
-import queue
 from typing import Literal
 from collections.abc import Iterable
+import queue
 import h5py
 import numpy as np
 import numpy.typing as npt
@@ -29,9 +29,10 @@ import scipy.signal
 from bpreveal import utils
 from bpreveal.internal.constants import IMPORTANCE_AR_T, IMPORTANCE_T, \
     MOTIF_FLOAT_AR_T, ONEHOT_AR_T, ONEHOT_T, MOTIF_FLOAT_T, \
-    QUEUE_TIMEOUT, GENOME_NUCLEOTIDE_FREQUENCY
+    GENOME_NUCLEOTIDE_FREQUENCY
 from bpreveal.logUtils import wrapTqdm
 from bpreveal import logUtils
+from bpreveal.internal.crashQueue import CrashQueue
 try:
     from bpreveal import jaccard
 except ModuleNotFoundError:
@@ -806,10 +807,10 @@ def makePatternObjects(patternSpec: list[dict] | str, modiscoH5Fname: str,
 
         [ {"metacluster-name" : <string>,
         "pattern-name" : <string>,
-        ??"short-name" : <string> ??
-        ??"seq-match-quantile": <number-or-null>??
-        ??"contrib-match-quantile": <number-or-null>??
-        ??"contrib-magnitude-quantile": <number-or-null>??
+        «"short-name" : <string> »
+        «"seq-match-quantile": <number-or-null>»
+        «"contrib-match-quantile": <number-or-null>»
+        «"contrib-magnitude-quantile": <number-or-null>»
         },
         ...
         ]
@@ -819,7 +820,7 @@ def makePatternObjects(patternSpec: list[dict] | str, modiscoH5Fname: str,
 
         [ {"metacluster-name" : <string>,
         "pattern-names" : [<string>, ...],
-        ??"short-names" : [<string>,...]??
+        «"short-names" : [<string>,...]»
         },
         ...
         ]
@@ -1194,7 +1195,7 @@ class PatternScanner:
     to assign scores.
     """
 
-    def __init__(self, hitQueue: multiprocessing.Queue, contribFname: str,
+    def __init__(self, hitQueue: CrashQueue, contribFname: str,
                  patternConfig: list[dict]) -> None:
         """A tool to run the actual scans.
 
@@ -1233,9 +1234,9 @@ class PatternScanner:
         # Get all the data for this index.
         chromIdx = self.contribFp["coords_chrom"][idx]
         if isinstance(chromIdx, bytes):
-            logUtils.logFirstN(logUtils.WARNING,
+            logUtils.logFirstN(logUtils.ERROR,
                                "Detected an importance score file from before version 4.0. "
-                               "This will be an error in BPReveal 5.0. "
+                               "This will be an error in BPReveal 6.0. "
                                "Instructions for updating: Re-calculate importance scores.",
                                1)
             chrom = chromIdx.decode("utf-8")
@@ -1267,16 +1268,16 @@ class PatternScanner:
                                   hitSequence, idx,
                                   hit[2],
                                   hit[3], hit[4])
-                    self.hitQueue.put(madeHit, timeout=QUEUE_TIMEOUT)
+                    self.hitQueue.put(madeHit)
 
     def done(self) -> None:
         """When scanning is finished, close the contribution .h5 file."""
         self.contribFp.close()
         # Send a -1 as a signal that a thread has finished up.
-        self.hitQueue.put(-1, timeout=QUEUE_TIMEOUT)
+        self.hitQueue.put(-1)
 
 
-def scannerThread(queryQueue: multiprocessing.Queue, hitQueue: multiprocessing.Queue,
+def scannerThread(queryQueue: CrashQueue, hitQueue: CrashQueue,
                   contribFname: str, patternConfig: list[dict]) -> None:
     """The thread for one scanner.
 
@@ -1294,7 +1295,7 @@ def scannerThread(queryQueue: multiprocessing.Queue, hitQueue: multiprocessing.Q
     """
     scanner = PatternScanner(hitQueue, contribFname, patternConfig)
     while True:
-        curQuery = queryQueue.get(timeout=QUEUE_TIMEOUT)
+        curQuery = queryQueue.get()
         if curQuery == -1:
             # End of the line, finish up!
             scanner.done()
@@ -1302,7 +1303,7 @@ def scannerThread(queryQueue: multiprocessing.Queue, hitQueue: multiprocessing.Q
         scanner.scanIndex(curQuery)
 
 
-def writerThread(hitQueue: multiprocessing.Queue, scannerThreads: int, tsvFname: str) -> None:
+def writerThread(hitQueue: CrashQueue, scannerThreads: int, tsvFname: str) -> None:
     """A thread that runs concurrently with however many scanners you're using.
 
     It reads from hitQueue and saves out any hits to a csv file, a bed file, or both.
@@ -1327,7 +1328,7 @@ def writerThread(hitQueue: multiprocessing.Queue, scannerThreads: int, tsvFname:
         numWaits = 0
         while True:
             try:
-                ret = hitQueue.get(timeout=QUEUE_TIMEOUT)
+                ret = hitQueue.get()
             except queue.Empty:
                 logUtils.warning("Exceeded timeout waiting to see a hit. Either your motif is very"
                                 " rare, or there is a bug in the code. If you see this message"
@@ -1378,22 +1379,23 @@ def scanPatterns(contribH5Fname: str, patternConfig: list[dict],
                                         args=[hitQueue, numThreads - 2, tsvFname],
                                         daemon=True)
     logUtils.info("Starting threads.")
-    [x.start() for x in scannerProcesses]  # pylint: disable=expression-not-assigned
+    for t in scannerProcesses:
+        t.start()
 
     writeProc.start()
     with h5py.File(contribH5Fname, "r") as fp:
         # How many queries do I need to stuff down the query queue?
         numRegions = np.array(fp["coords_start"]).shape[0]
     logUtils.debug("Starting to send queries to the processes.")
-
     for i in wrapTqdm(range(numRegions)):
         # The queries are generated by the main thread.
-        queryQueue.put(i, timeout=QUEUE_TIMEOUT)
+        queryQueue.put(i)
     logUtils.debug("Done adding queries to the processes. Waiting for scanners to finish.")
     for _ in range(numThreads - 2):
-        queryQueue.put(-1, timeout=QUEUE_TIMEOUT)
+        queryQueue.put(-1)
 
-    [x.join() for x in scannerProcesses]  # pylint: disable=expression-not-assigned
+    for t in scannerProcesses:
+        t.join()
     writeProc.join()
     logUtils.info("Done scanning.")
 # Copyright 2022, 2023, 2024 Charles McAnany. This file is part of BPReveal. BPReveal is free software: You can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 2 of the License, or (at your option) any later version. BPReveal is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with BPReveal. If not, see <https://www.gnu.org/licenses/>.  # noqa

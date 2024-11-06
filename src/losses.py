@@ -2,10 +2,12 @@
 from collections.abc import Callable
 import tensorflow as tf
 import tensorflow_probability as tfp
-from tf_keras import backend
+from keras import ops  # type: ignore
 from bpreveal import logUtils
+from keras.saving import register_keras_serializable  # type: ignore
 
 
+@register_keras_serializable(package="bpreveal", name="multinomialNll")
 def multinomialNll(trueCounts: tf.Tensor, logits: tf.Tensor) -> float:
     """The heart of what makes BPNet great - the loss function for profiles.
 
@@ -16,19 +18,19 @@ def multinomialNll(trueCounts: tf.Tensor, logits: tf.Tensor) -> float:
     :return: A scalar representing the profile loss of this batch.
     """
     logUtils.debug("Creating multinomial NLL.")
-    inputShape = tf.shape(trueCounts)
+    inputShape = ops.shape(trueCounts)
     numBatches = inputShape[0]
     numSamples = inputShape[1] * inputShape[2]  # output length * num_tasks
 
-    flatCounts = tf.reshape(trueCounts, [numBatches, numSamples])
-    flatLogits = tf.reshape(logits, [numBatches, numSamples])
-    totalCounts = tf.reduce_sum(flatCounts, axis=1)
+    flatCounts = ops.reshape(trueCounts, [numBatches, numSamples])
+    flatLogits = ops.reshape(logits, [numBatches, numSamples])
+    totalCounts = ops.sum(flatCounts, axis=1)
     distribution = tfp.distributions.Multinomial(total_count=totalCounts,
             logits=flatLogits)
     logprobs = distribution.log_prob(flatCounts)
-    batchSize = tf.shape(trueCounts)[0]
-    sumProbs = tf.reduce_sum(logprobs)
-    curLoss = -sumProbs / tf.cast(batchSize, dtype=tf.float32)
+    batchSize = ops.shape(trueCounts)[0]
+    sumProbs = ops.sum(logprobs)
+    curLoss = -sumProbs / ops.cast(batchSize, dtype=tf.float32)
     return curLoss
 
 
@@ -47,10 +49,10 @@ def weightedMse(weightTensor: tf.Variable) -> Callable:
     """
     logUtils.debug("Creating weighted mse.")
 
+    @register_keras_serializable(package="bpreveal", name="reweightableMse")
     def reweightableMse(yTrue: tf.Tensor, yPred: tf.Tensor) -> float:
-        yPred = tf.convert_to_tensor(yPred)
-        yTrue = tf.cast(yTrue, yPred.dtype)
-        mse = backend.mean(tf.math.squared_difference(yPred, yTrue), axis=-1)
+        squaredDiff = ops.square(yTrue - yPred)
+        mse = ops.mean(squaredDiff, axis=-1)
         scaledMse = mse * weightTensor
         return scaledMse
     return reweightableMse

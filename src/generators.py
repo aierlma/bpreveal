@@ -8,7 +8,7 @@ import time
 import h5py
 import numpy as np
 from numpy._typing import NDArray
-import tf_keras as keras
+import keras
 from bpreveal import logUtils
 from bpreveal.internal.constants import MODEL_ONEHOT_T, NUM_BASES, ONEHOT_T, PRED_T
 from bpreveal.internal.libslide import slide, slideChar
@@ -77,7 +77,7 @@ class H5BatchGenerator(keras.utils.Sequence):
         """How many *batches* of data are there in this Generator?"""
         return math.ceil(self.numRegions / self.batchSize)
 
-    def __getitem__(self, idx: int) -> tuple[NDArray, list[NDArray]]:
+    def __getitem__(self, idx: int) -> tuple[NDArray, tuple[NDArray]]:
         """Get the next *batch* of data."""
         batchStart = idx * self.batchSize
         batchEnd = min((idx + 1) * self.batchSize, self.numRegions)
@@ -86,7 +86,7 @@ class H5BatchGenerator(keras.utils.Sequence):
         for i in range(len(self.headList)):
             vals.append(self._allBatchValues[i][batchStart:batchEnd])
             counts.append(self._allBatchCounts[i][batchStart:batchEnd])
-        return self._allBatchSequences[batchStart:batchEnd], (vals + counts)
+        return self._allBatchSequences[batchStart:batchEnd], tuple(vals + counts)
 
     def loadData(self) -> None:
         """Read in the hdf5 file and suck all the data into memory.
@@ -138,7 +138,7 @@ class H5BatchGenerator(keras.utils.Sequence):
             valSums = np.sum(self._allBatchValues[headIdx], axis=(1, 2))
             self._allBatchCounts[headIdx] = np.log(valSums)
 
-    def on_epoch_end(self) -> None:  # pylint: disable=invalid-name
+    def on_epoch_end(self) -> None:
         """When the epoch is done, re-jitter the data by calling refreshData."""
         self.refreshData()
 # Copyright 2022, 2023, 2024 Charles McAnany. This file is part of BPReveal. BPReveal is free software: You can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 2 of the License, or (at your option) any later version. BPReveal is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with BPReveal. If not, see <https://www.gnu.org/licenses/>.  # noqa

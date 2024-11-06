@@ -517,33 +517,33 @@ def validateRegions(config: dict, regions: pybedtools.BedTool,
 
 def rewriteOldBigwigsFormat(config: dict) -> None:
     """If the config has a bigwigs section, rewrite it to the new style."""
-    logUtils.warning("You are using a deprecated JSON format for prepareBed.py")
-    logUtils.warning("This will result in an error in BPReveal 5.0")
-    logUtils.warning("Instead of providing individual bigwig names with a \"bigwigs\"")
-    logUtils.warning("section in your json, use the new \"heads\" section.")
-    logUtils.warning("Example update: If you currently have")
-    logUtils.warning('"bigwigs": [{"file-name": "protein1_pos.bw",')
-    logUtils.warning('             "max-counts": 10000,')
-    logUtils.warning('             "min-counts": 10},')
-    logUtils.warning('            {"file-name": "protein1_neg.bw",')
-    logUtils.warning('             "max-counts": 10000,')
-    logUtils.warning('             "min-counts": 10},')
-    logUtils.warning('            {"file-name": "protein2_pos.bw",')
-    logUtils.warning('             "max-counts": 3000,')
-    logUtils.warning('             "min-counts": 20},')
-    logUtils.warning('            {"file-name": "protein2_neg.bw",')
-    logUtils.warning('             "max-counts": 3000,')
-    logUtils.warning('              "min-counts" : 20} ]')
-    logUtils.warning("you should update this to reflect the head structure of your model:")
-    logUtils.warning('"heads": [{"bigwig-names": ["protein1_pos.bw", "protein1_neg.bw"],')
-    logUtils.warning('           "max-counts": 20000,')
-    logUtils.warning('           "min-counts": 20},')
-    logUtils.warning('          {"bigwig-names": ["protein2_pos.bw", "protein2_neg.bw"],')
-    logUtils.warning('           "max-counts": 6000,')
-    logUtils.warning('           "min-counts": 40}]')
-    logUtils.warning("Note how the max-counts and min-counts values double, since the bigwigs")
-    logUtils.warning("in each head will be added together to determine the total counts in")
-    logUtils.warning("a region. (You don't need to change quantiles, though.)")
+    logUtils.error("You are using a deprecated JSON format for prepareBed.py")
+    logUtils.error("This will result in an error in BPReveal 6.0")
+    logUtils.error("Instead of providing individual bigwig names with a \"bigwigs\"")
+    logUtils.error("section in your json, use the new \"heads\" section.")
+    logUtils.error("Example update: If you currently have")
+    logUtils.error('"bigwigs": [{"file-name": "protein1_pos.bw",')
+    logUtils.error('             "max-counts": 10000,')
+    logUtils.error('             "min-counts": 10},')
+    logUtils.error('            {"file-name": "protein1_neg.bw",')
+    logUtils.error('             "max-counts": 10000,')
+    logUtils.error('             "min-counts": 10},')
+    logUtils.error('            {"file-name": "protein2_pos.bw",')
+    logUtils.error('             "max-counts": 3000,')
+    logUtils.error('             "min-counts": 20},')
+    logUtils.error('            {"file-name": "protein2_neg.bw",')
+    logUtils.error('             "max-counts": 3000,')
+    logUtils.error('              "min-counts" : 20} ]')
+    logUtils.error("you should update this to reflect the head structure of your model:")
+    logUtils.error('"heads": [{"bigwig-names": ["protein1_pos.bw", "protein1_neg.bw"],')
+    logUtils.error('           "max-counts": 20000,')
+    logUtils.error('           "min-counts": 20},')
+    logUtils.error('          {"bigwig-names": ["protein2_pos.bw", "protein2_neg.bw"],')
+    logUtils.error('           "max-counts": 6000,')
+    logUtils.error('           "min-counts": 40}]')
+    logUtils.error("Note how the max-counts and min-counts values double, since the bigwigs")
+    logUtils.error("in each head will be added together to determine the total counts in")
+    logUtils.error("a region. (You don't need to change quantiles, though.)")
 
     headsConfig = []
     for bwConf in config["bigwigs"]:
@@ -551,9 +551,9 @@ def rewriteOldBigwigsFormat(config: dict) -> None:
         bwConf["bigwig-names"] = bwNames
         del bwConf["file-name"]
         headsConfig.append(bwConf)
-    logUtils.warning("Your heads config has been automatically converted to the new format,")
-    logUtils.warning("with each bigwig being considered as its own head:")
-    logUtils.warning(str(headsConfig))
+    logUtils.error("Your heads config has been automatically converted to the new format,")
+    logUtils.error("with each bigwig being considered as its own head:")
+    logUtils.error(str(headsConfig))
     config["heads"] = headsConfig
 
 
@@ -563,15 +563,15 @@ def prepareBeds(config: dict) -> None:
     :param config: A JSON object matching the prepareBed specification.
     """
     logUtils.info("Starting bed file generation.")
-    # FUTURE: In BPReveal 5.0, raise an error inside this if block.
+    # FUTURE: In BPReveal 6.0, raise an error inside this if block.
     # In BPReveal 7.0, remove it entirely.
     if "bigwigs" in config:
         rewriteOldBigwigsFormat(config)
     if "num-threads" not in config:
         numThreads = 1
-        logUtils.warning("You have not specified a number of threads in your prepareBed config."
-                        "Defaulting to one thread. "
-                        "You may see a performance gain if you set num-threads around 20.")
+        logUtils.warning("You have not specified a number of threads in your prepareBed config. "
+                         "Defaulting to one thread. "
+                         "You may see a performance gain if you set num-threads around 20.")
     else:
         numThreads = config["num-threads"]
         logUtils.debug(f"Using {numThreads} threads")
@@ -629,8 +629,8 @@ if __name__ == "__main__":
     import bpreveal.schema
     try:
         bpreveal.schema.prepareBed_old.validate(configJson)
-        logUtils.warning("Json validated against the old prepareBed format."
-                        "This will be an error in BPReveal 5.0")
+        logUtils.error("Json validated against the old prepareBed format."
+                       "This will be an error in BPReveal 6.0")
     except jsonschema.ValidationError:
         bpreveal.schema.prepareBed.validate(configJson)
     prepareBeds(configJson)

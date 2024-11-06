@@ -64,8 +64,8 @@ def reweightCountsLosses(history: dict, lossTypes: list[list[str]]) -> list[floa
         history["cw_" + countsKey] = countsLossWeight[countsKey]
         weightLossTypes.append("cw_" + countsKey)
         # countsKey will be the head-name, we need to decorate it.
-        countsRe = re.compile(f".*logcounts_{countsKey}_loss")
-        profileRe = re.compile(f".*profile_{countsKey}_loss")
+        countsRe = re.compile(f".*logcounts_{countsKey}_reweightable_mse")
+        profileRe = re.compile(f".*profile_{countsKey}_multinomial_nll")
         for lossPair in lossTypes:
             typesToAdd = []
             for lossType in lossPair:
@@ -151,6 +151,7 @@ def plotLosses(lossTypes: list[list[str]], history: dict, startFrom: int) -> Fig
     fig, axs = plt.subplots(nrows=numRowsCols, ncols=numRowsCols, sharex=True, figsize=(15, 15))
     epochs = range(len(history[lossTypes[0][0]]))
     for i, lt in enumerate(lossTypes):
+        logUtils.info("Plotting loss type " + str(lt))
         allDats = []
         ax = axs[i // numRowsCols][i % numRowsCols]
         for loss in lt:

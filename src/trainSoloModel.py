@@ -55,9 +55,13 @@ output-prefix
     The file name where you want your model saved. For example, if you are
     saving models in a directory called ``models``, and you want the model to
     be called ``solo``, then you'd write ``"output-prefix" : "models/solo"``.
-    In this case, you'll find the files ``models/solo.model``, which is the
+    In this case, you'll find the files ``models/solo.keras``, which is the
     Keras model, and ``models/solo.history.json``, containing the training
     history.
+
+    .. note:
+        Before BPReveal 5.0, the created file was given a ``.model`` extension
+        but this changed to ``.keras`` as of BPReveal 5.0.
 
 early-stopping-patience
     Controls how long the network should wait for an improvement in the loss
@@ -152,7 +156,7 @@ import bpreveal.internal.disableTensorflowLogging  # pylint: disable=unused-impo
 from bpreveal import utils
 if __name__ == "__main__":
     utils.setMemoryGrowth()
-import tf_keras as keras
+from tensorflow import keras
 from bpreveal import logUtils
 from bpreveal import models
 import bpreveal.training
@@ -178,9 +182,9 @@ def main(config: dict) -> None:
     losses, lossWeights = bpreveal.training.buildLosses(config["heads"])
     model.compile(
         optimizer=keras.optimizers.Adam(learning_rate=config["settings"]["learning-rate"]),
-        loss=losses, loss_weights=lossWeights)
+        loss=losses, loss_weights=lossWeights, metrics=losses)
     bpreveal.training.trainWithGenerators(model, config, inputLength, outputLength)
-    model.save(config["settings"]["output-prefix"] + ".model")
+    model.save(config["settings"]["output-prefix"] + ".keras")
     logUtils.info("Training job completed successfully.")
 
 

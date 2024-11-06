@@ -13,14 +13,12 @@ from tensorflow.python.eager import execute as tf_execute
 from tensorflow.python.framework import (
     ops as tf_ops,
 )
-import tf_keras as keras
 import tensorflow as tf
 
-
-def standard_combine_mult_and_diffref(mult, orig_inp, bg_data):
-    diffref_input = [orig_inp[x] - bg_data[x] for x in range(len(orig_inp))]
+def standard_combine_mult_and_diffref(mult, originalInput, backgroundData):
+    diffref_input = [originalInput[x] - backgroundData[x] for x in range(len(originalInput))]
     to_return = [(mult[x] * (diffref_input[x])).mean(0)
-                 for x in range(len(orig_inp))]
+                 for x in range(len(originalInput))]
     return to_return
 
 
@@ -53,7 +51,9 @@ class TFDeepExplainer:
     ReLu units proposed in DeepLIFT.
     """
 
-    def __init__(self, model, data, combine_mult_and_diffref=standard_combine_mult_and_diffref):
+    def __init__(self, model, data,
+                 combine_mult_and_diffref=standard_combine_mult_and_diffref,
+                 useOldKeras=False):
         """An explainer object for a deep model using a given background dataset.
 
         Note that the complexity of the method scales linearly with the number
@@ -66,8 +66,8 @@ class TFDeepExplainer:
 
         Parameters
         ----------
-        model : tf.keras.Model or (input : [tf.Operation], output : tf.Operation)
-            A keras model object or a pair of TensorFlow operations (or a list and an op) that
+        model : (input : [tf.Operation], output : tf.Operation)
+            A pair of TensorFlow operations (or a list and an op) that
             specifies the input and output of the model to be explained. Note that SHAP values
             are specific to a single output value, so you get an explanation for each element of
             the output tensor (which must be a flat rank one vector).
@@ -84,22 +84,25 @@ class TFDeepExplainer:
         self.between_tensors = None
         self.between_ops = None
         # determine the model inputs and outputs
-        self.model_inputs = _get_model_inputs(model)
-        self.model_output = _get_model_output(model)
-        assert not isinstance(
-            self.model_output, list), "The model output to be explained must be a single tensor!"
-        assert len(
-            self.model_output.shape) < 3, "The model output must be a vector or a single value!"
+        self.model_inputs = model[0]
+        if not isinstance(self.model_inputs, list):
+            self.model_inputs = [self.model_inputs]
+        self.model_output = model[1]
+        assert not isinstance(self.model_output, list), \
+            "The model output to be explained must be a single tensor!"
+        assert len(self.model_output.shape) < 3, \
+            "The model output must be a vector or a single value!"
 
-        if isinstance(model, (tuple, list)):
-            assert len(
-                model) == 2, "When a tuple is passed it must be of the form (inputs, outputs)"
-            self.model = keras.Model(model[0], model[1])
+        assert len(model) == 2, \
+            "When a tuple is passed it must be of the form (inputs, outputs)"
+        if useOldKeras:
+            import tf_keras  # pylint: disable=import-outside-toplevel
+            self.model = tf_keras.Model(model[0], model[1])
         else:
-            self.model = model
+            import keras  # pylint: disable=import-outside-toplevel
+            self.model = keras.Model(model[0], model[1])
 
         # check if we have multiple inputs
-        self.model_inputs = [self.model_inputs]
         self.data = data
 
         self._vinputs = {}  # used to track what op inputs depends on the model inputs
@@ -130,7 +133,6 @@ class TFDeepExplainer:
             tensor_blacklist, dependence_breakers,
             within_ops=back_ops
         )
-
         # note all the tensors that are on the path between the inputs and the output
         self.between_tensors = {}
         for op in self.between_ops:
@@ -138,7 +140,6 @@ class TFDeepExplainer:
                 self.between_tensors[t.name] = True
         for t in model_inputs:
             self.between_tensors[t.name] = True
-
         # save what types are being used
         self.used_types = {}
         for op in self.between_ops:
@@ -158,8 +159,6 @@ class TFDeepExplainer:
         if self.phi_symbolics[i] is None:
             @tf.function
             def grad_graph(shap_rAnD):
-                phase = keras.backend.learning_phase()
-                keras.backend.set_learning_phase(0)
 
                 with tf.GradientTape(watch_accessed_variables=False) as tape:
                     tape.watch(shap_rAnD)
@@ -167,7 +166,6 @@ class TFDeepExplainer:
 
                 self._init_between_tensors(out.op, shap_rAnD)
                 x_grad = tape.gradient(out, shap_rAnD)
-                keras.backend.set_learning_phase(phase)
                 return x_grad
 
             self.phi_symbolics[i] = grad_graph  # type: ignore
@@ -197,7 +195,6 @@ class TFDeepExplainer:
                 # we use the first sample for the current sample and the rest for the references
                 joint_input = [np.concatenate([tiled_X[idx], bg_data[idx]], 0)
                                for idx in range(len(X))]
-
                 # run attribution computation graph
                 feature_ind = model_output_ranks[j, i]
                 sample_phis = self.run(self.phi_symbolic(feature_ind),
@@ -206,8 +203,8 @@ class TFDeepExplainer:
                 phis_j = self.combine_mult_and_diffref(
                     mult=[sample_phis[idx][:-bg_data[idx].shape[0]]
                           for idx in range(len(X))],
-                    orig_inp=[X[idx][j] for idx in range(len(X))],
-                    bg_data=bg_data)
+                    originalInput=[X[idx][j] for idx in range(len(X))],
+                    backgroundData=bg_data)
                 # assign the attributions to the right part of the output arrays
                 for idx in range(len(X)):
                     phis[idx][j] = phis_j[idx]
@@ -622,6 +619,7 @@ op_handlers["ClipByValue"] = nonlinearity_1d(0)
 op_handlers["Rsqrt"] = nonlinearity_1d(0)
 op_handlers["Square"] = nonlinearity_1d(0)
 op_handlers["Max"] = nonlinearity_1d(0)
+op_handlers["Log"] = nonlinearity_1d(0)
 
 # ops that are nonlinear and allow two inputs to vary
 op_handlers["SquaredDifference"] = nonlinearity_1d_nonlinearity_2d(
@@ -642,47 +640,3 @@ op_handlers["GatherV2"] = gather
 op_handlers["ResourceGather"] = gather
 op_handlers["MaxPool"] = maxpool
 op_handlers["Softmax"] = softmax
-
-
-def _get_model_inputs(model):
-    """Common utility to determine the model inputs.
-
-    Parameters
-    ----------
-    model : Tensorflow Keras model or tuple
-
-        The tensorflow model or tuple.
-
-    """
-    if str(type(model)).endswith("keras.engine.sequential.Sequential'>") or \
-            str(type(model)).endswith("keras.models.Sequential'>") or \
-            str(type(model)).endswith("keras.engine.training.Model'>") or \
-            isinstance(model, keras.Model):
-        return model.inputs
-    if str(type(model)).endswith("tuple'>"):
-        return model[0]
-
-    emsg = f"{type(model)} is not currently a supported model type!"
-    raise ValueError(emsg)
-
-
-def _get_model_output(model):
-    """Common utility to determine the model output.
-
-    Parameters
-    ----------
-    model : Tensorflow Keras model or tuple
-
-        The tensorflow model or tuple.
-
-    """
-    if str(type(model)).endswith("keras.engine.sequential.Sequential'>") or \
-            str(type(model)).endswith("keras.models.Sequential'>") or \
-            str(type(model)).endswith("keras.engine.training.Model'>") or \
-            isinstance(model, keras.Model):
-        return model.layers[-1].output
-    if str(type(model)).endswith("tuple'>"):
-        return model[1]
-
-    emsg = f"{type(model)} is not currently a supported model type!"
-    raise ValueError(emsg)

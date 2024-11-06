@@ -51,14 +51,15 @@ runAndCheck python3 --version \| grep -q "${PYTHON_VERSION}"
 # doesn't support it. (And pip can't figure this out.)
 runAndCheck ${CONDA_BIN} install --yes -c conda-forge "numpy\<2.0"
 # Tensorflow expressly advises against installing with conda.
-${PIP_BIN} install 'tensorflow[and-cuda]'
+${PIP_BIN} install 'tensorflow[and-cuda]<2.18'
 check Installing tensorflow
 
+# tensorflow-probability needs tf-keras (at least as of tf 2.16)
+runAndCheck ${PIP_BIN} install "tf-keras\<2.18"
 runAndCheck ${PIP_BIN} install 'tensorflow-probability'
 checkPackage tensorflow
 checkPackage tensorflow_probability
 
-runAndCheck ${PIP_BIN} install 'tf-keras~=2.16'
 
 runAndCheck ${CONDA_BIN} install --yes -c conda-forge matplotlib jsonschema cmake h5py \
     tqdm gxx_linux-64 gfortran meson conda-build
@@ -90,8 +91,8 @@ fi
 if [ "$INSTALL_DEVTOOLS" = true ] ; then
     runAndCheck ${CONDA_BIN} install --yes -c conda-forge flake8 pydocstyle \
         pylint sphinx sphinx_rtd_theme sphinx-argparse sphinx-autodoc-typehints coverage
-    runAndCheck ${PIP_BIN} install --no-input flake8-bugbear flake8-mutable flake8-print \
-        flake8-eradicate flake8-annotations flake8-pep585
+    runAndCheck ${PIP_BIN} install --no-input flake8-bugbear flake8-mutable \
+        flake8-print flake8-eradicate flake8-annotations flake8-pep585
 fi
 
 if [ "$INSTALL_MISC" = true ] ; then
@@ -157,8 +158,8 @@ EOF
 
 # Since Keras 3 has a bunch of breaking changes, force tensorflow
 # to use its internal keras version.
-echo "export TF_USE_LEGACY_KERAS=1" \
-    > ${CONDA_PREFIX}/etc/conda/activate.d/legacy_keras_activate.sh
+# echo "export TF_USE_LEGACY_KERAS=1" \
+#     > ${CONDA_PREFIX}/etc/conda/activate.d/legacy_keras_activate.sh
 
 #And add a (very hacky) deactivation command that removes bpreveal from
 #your path when you deactivate the environment.
@@ -179,8 +180,8 @@ echo 'export LD_LIBRARY_PATH=$(echo $LD_LIBRARY_PATH | sed "s|$BPREVEAL_KILL_LD_
 # Remove Conda environment lib path from LD_LIBRARY_PATH
 echo 'export LD_LIBRARY_PATH=$(echo $LD_LIBRARY_PATH | sed "s|$CONDA_PREFIX/lib:||g")'\
     >> ${CONDA_PREFIX}/etc/conda/deactivate.d/cuda_xla_deactivate.sh
-echo "unset TF_USE_LEGACY_KERAS" \
-    > ${CONDA_PREFIX}/etc/conda/deactivate.d/legacy_keras_deactivate.sh
+# echo "unset TF_USE_LEGACY_KERAS" \
+#     > ${CONDA_PREFIX}/etc/conda/deactivate.d/legacy_keras_deactivate.sh
 
 
 echo "*-----------------------------------*"

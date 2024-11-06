@@ -133,8 +133,8 @@ def main(config: dict) -> None:
 
         cutoffConfig = config["seqlet-cutoff-settings"]
         if "modisco-window" not in cutoffConfig:
-            logUtils.warning("Did not find a modisco window size. Reported"
-                             "seqlet positions will be invalid.")
+            logUtils.error("Did not find a modisco window size. Reported"
+                           "seqlet positions will be invalid.")
             cutoffConfig["modisco-window"] = 0
         logUtils.info("Modisco seqlet analysis requested. "
                       f"Starting with {cutoffConfig['modisco-h5']}")

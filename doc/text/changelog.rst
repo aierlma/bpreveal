@@ -4,6 +4,71 @@ Changelog
 This is the detailed changelog. If you're just looking for breaking changes,
 see :doc:`breakingChanges`.
 
+BPReveal 5.x
+------------
+
+BPReveal 5.0.x
+^^^^^^^^^^^^^^
+
+BPReveal 5.0.1, 2024-10-29
+''''''''''''''''''''''''''
+
+BUG FIXES:
+    * Specified that the installer should use a tensorflow version before 2.18,
+      since 2.18 has a serious regression on my machine that makes the GPU unusable.
+
+BPReveal 5.0.0, 2024-09-25
+''''''''''''''''''''''''''
+
+BREAKING CHANGES:
+    * The default value of ``correct-receptive-field`` in interpretPisa
+      is now ``true``. It still issues a warning if you don't set it.
+    * ``dumpModiscoSeqlets`` was removed.
+    * The shap code was further trimmed down. The BPReveal shap code is really
+      not intended for non-BPReveal models and you should use full-blown
+      deepShap to interpret your own models.
+    * Several breaking changes have arisen from the Keras 3.0 upgrade. For one
+      thing, the loss components now have different names since they are
+      actually metrics and not losses. I'm sure there are more gotchas waiting
+      to be discovered.
+
+NEW FEATURES:
+    * A new tool was added that filters the output of other programs to get rid
+      of garbage tensorflow warnings and messages. It can wrap another
+      executable or be used as a filter on stdin.
+
+ENHANCEMENTS:
+    * The project now uses Tensorflow 2.17 with full-blown Keras 3.0. This
+      means that models are now saved using the ``.keras`` extension. Old-style
+      models will work albeit with some potential breakage.
+    * Made the formatting for the bnf documentation more consistent.
+    * Found a way to include the custom losses in the saved model, so you don't
+      need to use custom_objects to load models any more. Of course, you should
+      be using :py:func:`utils.loadModel<bpreveal.utils.loadModel>`.
+    * The slurm tool now allows you to not specify the GPU type for an
+      allocation. This is also now the default if you don't edit the
+      ``gpuType`` entry in the configuration dictionary.
+
+BUG FIXES:
+    * Fixed an issue with how losses and metrics are calculated differently.
+      This required adding a brand new callback to make the loss functions and
+      the metrics mean the same thing.
+    * Tons and tons of stuff to deal with Keras 3.0. Ugh.
+    * Fixed a deadlock where a consumer of a queue could crash and cause the
+      producer thread to hang, waiting for the queue to drain. Timeout errors
+      now cause the underlying queue to ``cancel_join_thread()``, avoiding
+      the deadlock.
+
+DEPRECATIONS:
+    * The addNoise tool is deprecated and will be removed in 6.0.0. It was
+      never useful.
+
+KNOWN ISSUES:
+    * Keras has a bug that causes a race condition when loading models. This
+      was patched in 3.5.0. In the meantime, I have added a lock that
+      prevents multiple processes from loading a model simultaneously, but this
+      only works when all of the readers are created by one master Python
+      program, and not, for example, when using slurm to launch multiple jobs.
 
 BPReveal 4.x
 ------------

@@ -2,10 +2,94 @@
 import re
 import time
 from collections.abc import Callable, Sequence
-from tf_keras.callbacks import ModelCheckpoint, EarlyStopping, \
-    ReduceLROnPlateau, Callback
+from keras.callbacks import ModelCheckpoint, EarlyStopping  # type: ignore
+from keras.callbacks import ReduceLROnPlateau, Callback  # type: ignore
+from keras.src import backend
 from bpreveal import logUtils
 from bpreveal import generators
+
+
+class FixLossCallback(Callback):
+    """Fixes the loss terms in the logs to reflect the metrics, not the actual loss values.
+
+    This is because of a stupid in Keras. If you use a loss function for the metrics,
+    they will not give the same values, because of something something regularization.
+    That is, if you do ``model.compile(loss=[fun], metrics=[fun])``, then the loss value
+    will be different than the metric. I hate it. It's dumb. Worse, the value is *close* to
+    the metric value.
+
+    Since the way BPReveal tracks the components of the losses is by using different metrics,
+    the assumption is that loss = sum(metrics). Instead of figuring out what regularization means,
+    I simply redefine the loss in the logs for each epoch by overwriting the ``loss``
+    (and ``val_loss``) items in the logs dict with the sums of the metrics. While the
+    model trains based on the actual (perverted) loss, the callbacks see only the idealized
+    loss value that this function stuffs into the logs dictionary.
+
+    .. note:
+        This must be the *first* callback when you compile your model.
+
+    """
+
+    # Straight from the json, with "INTERNAL_counts-loss-weight-variable".
+    heads: list[dict]
+
+    def __init__(self, heads: list[dict]):
+        """Build the callback."""
+        super().__init__()
+        self.heads = heads
+        logUtils.debug(heads)  # type: ignore
+
+    def correctLosses(self, logs: dict) -> None:  # pylint: disable=redundant-returns-doc
+        """Get the corrected loss value and put it in ``logs``.
+
+        :param logs: The logs from the current epoch or batch.
+            This will be EDITED IN PLACE.
+
+        :return: Nothing, but does edit logs.
+
+        """
+        totalValLoss = 0
+        totalLoss = 0
+
+        for head in self.heads:
+            headName = head["head-name"]
+            profileRe = fr".*profile_{headName}_multinomial_nll"
+            countsRe = fr".*logcounts_{headName}_reweightable_mse"
+            valProfileRe = fr"val.*profile_{headName}_multinomial_nll"
+            valCountsRe = fr"val.*logcounts_{headName}_reweightable_mse"
+
+            for lossName in logs.keys():
+                # Match the validation regexes first, because the
+                # non-validation losses are just missing the characters
+                # 'val', and so they'd also match validation losses.
+                if re.fullmatch(valProfileRe, lossName):
+                    totalValLoss += logs[lossName]
+                elif re.fullmatch(valCountsRe, lossName):
+                    totalValLoss += logs[lossName]
+                elif re.fullmatch(profileRe, lossName):
+                    totalLoss += logs[lossName]
+                elif re.fullmatch(countsRe, lossName):
+                    totalLoss += logs[lossName]
+        if totalLoss != 0:
+            logs["loss"] = totalLoss
+        if totalValLoss != 0:
+            logs["val_loss"] = totalValLoss
+
+    def on_epoch_end(self, _: int,
+                     logs: dict | None = None) -> None:
+        """Updates the logs."""
+        assert logs is not None, "Cannot work with empty logs!"
+        self.correctLosses(logs)
+
+    def on_train_batch_end(self, _: int, logs: dict | None = None) -> None:
+        """Updates the logs."""
+        assert logs is not None, "Cannot use empty logs!"
+        self.correctLosses(logs)
+
+    def on_test_batch_end(self, _: int, logs: dict | None = None) -> None:
+        """Updates the logs."""
+        assert logs is not None, "Cannot use empty logs!"
+        self.correctLosses(logs)
 
 
 class ApplyAdaptiveCountsLoss(Callback):
@@ -38,6 +122,12 @@ class ApplyAdaptiveCountsLoss(Callback):
     This callback messes with their internal state (naughty, naughty!) because changing the
     loss weights could cause the model's loss value to go up even though the model hasn't
     gotten any worse.
+
+    .. note:
+        Since Keras 3.0 doesn't separate out multiple components of the loss and also it lies
+        about the values of loss functions, you *must* include a
+        :py:class:`FixLossCallback<bpreveal.losses.FixLossCallback>` callback in your callback
+        array and it *must* be the first callback.
     """
 
     # Straight from the json, with "INTERNAL_counts-loss-weight-variable".
@@ -66,7 +156,7 @@ class ApplyAdaptiveCountsLoss(Callback):
         for head in heads:
             self.λHistory[head["head-name"]] = []
 
-    def on_train_begin(self, logs: dict | None = None) -> None:  # pylint: disable=invalid-name
+    def on_train_begin(self, logs: dict | None = None) -> None:
         """Set up the initial guesses for λ.
 
         :param logs: Ignored.
@@ -111,10 +201,10 @@ class ApplyAdaptiveCountsLoss(Callback):
         named "profile_x", then this could get messed up.
         """
         epochLosses = self.logsHistory[epoch]
-        profileRe = fr".*profile_{headName}_loss"
-        countsRe = fr".*logcounts_{headName}_loss"
-        valProfileRe = fr"val.*profile_{headName}_loss"
-        valCountsRe = fr"val.*logcounts_{headName}_loss"
+        profileRe = fr".*profile_{headName}_multinomial_nll"
+        countsRe = fr".*logcounts_{headName}_reweightable_mse"
+        valProfileRe = fr"val.*profile_{headName}_multinomial_nll"
+        valCountsRe = fr"val.*logcounts_{headName}_reweightable_mse"
 
         valProfile = valCounts = profile = counts = None
         for lossName in epochLosses.keys():
@@ -135,6 +225,9 @@ class ApplyAdaptiveCountsLoss(Callback):
             logUtils.error("Loss names " + str(list(epochLosses.keys())))
             logUtils.error("head name " + str(headName))
             logUtils.error("regex matches " + str([profile, counts, valProfile, valCounts]))
+            logUtils.error("As of Keras 3.0, all losses are combined. "
+                           "If you're manually compiling your model, pass in "
+                           "metrics=losses to model.compile.")
             raise ValueError("The loss didn't match any regex.")
         ret = (epochLosses[profile],
                epochLosses[counts],
@@ -202,7 +295,7 @@ class ApplyAdaptiveCountsLoss(Callback):
         self.checkpointCallback.best = correctedLoss
 
     def on_epoch_end(self, epoch: int,
-                     logs: dict | None = None) -> None:  # pylint: disable=invalid-name
+                     logs: dict | None = None) -> None:
         """Update the other callbacks and calculate a new λ.
 
         :param epoch: The epoch number that just finished.
@@ -268,9 +361,17 @@ class ApplyAdaptiveCountsLoss(Callback):
                     if threshold == 10:
                         # We jumped and had a large threshold - user should choose
                         # a better counts weight.
-                        logUtils.warning("A large λ change was detected in the first epoch. "
-                                         "Consider changing the starting counts-loss-weight for "
-                                         f"head {head['head-name']} to a value near {correctedλ}")
+                        if epoch == 1:
+                            logUtils.warning(f"A large λ change was detected on the first epoch. "
+                                             "Consider changing the starting counts-loss-weight "
+                                             f"for head {head['head-name']} to a value near "
+                                             f"{correctedλ}")
+                        else:
+                            logUtils.error(f"A large λ change was detected on epoch {epoch}. "
+                                           "This means your initial estimate was *way* wrong. "
+                                           "Change counts-loss-weight for head "
+                                           f"{head['head-name']} to a value near {correctedλ} "
+                                           "and re-start training.")
                 # With current loss weight, what is the loss fraction due to counts?
                 # (This doesn't enter our calculation, it's for logging.
                 scaledCurFrac = countsLoss / (profileLoss + countsLoss)
@@ -313,10 +414,14 @@ class DisplayCallback(Callback):
     """
     prevEpochLogs = None
     """The logs from last epoch"""
+    lastBatchTime: float
+    """When did the last batch happen?"""
     lastBatchEndTime = 0
-    """When did the last batch finish?"""
+    """When did the last batch that we printed finish?"""
+    lastValBatchTime: float
+    """When did the last validation batch happen?"""
     lastValBatchEndTime = 0
-    """When did the last validation batch finish?"""
+    """When did the last validation that we printed finish?"""
     lastEpochEndTime = None
     """When did the last epoch finish?"""
     lastEpochStartTime = None
@@ -334,6 +439,12 @@ class DisplayCallback(Callback):
     Used to calculate column positions."""
     trainBeginTime: float
     """When did the whole training process start?"""
+    firstBatchTime: float
+    """When did we see our first batch of this epoch?"""
+    firstValBatchTime: float
+    """When did we see our first validation batch of this epoch?"""
+    curEpochStartTime: float
+    """When did the current epoch start?"""
 
     def __init__(self, plateauCallback: ReduceLROnPlateau, earlyStopCallback: EarlyStopping,
                  adaptiveLossCallback: ApplyAdaptiveCountsLoss,
@@ -359,8 +470,8 @@ class DisplayCallback(Callback):
             foundInHeads = False
             for head in self.adaptiveLossCallback.heads:
                 headName = head["head-name"]
-                profileRe = fr".*profile_{headName}_loss"
-                countsRe = fr".*logcounts_{headName}_loss"
+                profileRe = fr".*profile_{headName}_.*"
+                countsRe = fr".*logcounts_{headName}_.*"
                 if re.fullmatch(profileRe, lossName):
                     profileLosses.append(lossName)
                     profileLosses.append("val_" + lossName)
@@ -400,7 +511,7 @@ class DisplayCallback(Callback):
             self.printLocationsBatch[po] = i + 2
         self.maxLen = max((len(x) for x in printOrderEpoch))
 
-    def on_train_begin(self, logs: dict | None = None) -> None:  # pylint: disable=invalid-name
+    def on_train_begin(self, logs: dict | None = None) -> None:
         """Just loads in the total number of epochs."""
         del logs
         params = self.params.get
@@ -410,18 +521,16 @@ class DisplayCallback(Callback):
             self.numEpochs = autoTotal
 
     def on_epoch_begin(self, epoch: int,
-                       logs: dict | None = None) -> None:  # pylint: disable=invalid-name
+                       logs: dict | None = None) -> None:
         """Just sets the timers up, so you can check how long an epoch took at the end."""
         del logs
         self.epochNumber = epoch
-        # pylint: disable=attribute-defined-outside-init
         self.batchNumber = 0
         self.curEpochStartTime = time.perf_counter()
         self.firstBatchTime = time.perf_counter() + 1e10
         self.firstValBatchTime = time.perf_counter() + 1e10
         if self.lastEpochEndTime is not None:
             self.curEpochWaitTime = time.perf_counter() - self.lastEpochEndTime
-        # pylint: enable=attribute-defined-outside-init
 
     def formatStr(self, val: str | int | float | tuple[int, int]) -> str:
         """Formats an object to be 10 characters wide.
@@ -446,7 +555,7 @@ class DisplayCallback(Callback):
                 return "     FMT_ERR"
 
     def on_epoch_end(self, epoch: int,
-                     logs: dict | None = None) -> None:  # pylint: disable=invalid-name
+                     logs: dict | None = None) -> None:
         """Writes out all the logs for this epoch and the last one at INFO logging level."""
         del epoch
         if logs is None:
@@ -479,14 +588,12 @@ class DisplayCallback(Callback):
         self._writeLogLines(lines, logUtils.debug, "λ")
         self.prevEpochLogs = logs
 
-    def on_train_batch_end(self, batch: int,  # pylint: disable=invalid-name
+    def on_train_batch_end(self, batch: int,
                            logs: dict | None = None) -> None:
         """Write the loss info for the current batch at DEBUG level."""
-        # pylint: disable=attribute-defined-outside-init
         logs = logs or {}
         self.firstBatchTime = min(time.perf_counter(), self.firstBatchTime)
         self.lastBatchTime = time.perf_counter()
-        # pylint: enable=attribute-defined-outside-init
         if len(list(self.printLocationsEpoch.keys())) == 0:
             # We haven't calculated any print locations yet.
             self._calcPositions(logs)
@@ -501,14 +608,12 @@ class DisplayCallback(Callback):
             self._writeLogLines(self._getBatchLines(logs), logUtils.debug,
                                 "BH" if batch == 0 else "B")
 
-    def on_test_batch_end(self, batch: int,  # pylint: disable=invalid-name
+    def on_test_batch_end(self, batch: int,
                           logs: dict | None = None) -> None:
         """Just emit a counter with the batch number at DEBUG level."""
         del logs
-        # pylint: disable=attribute-defined-outside-init
         self.firstValBatchTime = min(time.perf_counter(), self.firstValBatchTime)
         self.lastValBatchTime = time.perf_counter()
-        # pylint: enable=attribute-defined-outside-init
         if (time.perf_counter() - self.lastValBatchEndTime > 1.0) \
                 or batch in [self.numValBatches - 1, 0]:
             self.lastValBatchEndTime = time.perf_counter()
@@ -550,8 +655,12 @@ class DisplayCallback(Callback):
     def _getEpochLines(self, logs: dict) -> list[list[tuple[int, int, str]]]:
         lines = []
         logs["Epoch"] = (self.epochNumber, self.numEpochs)
+        logs["lr"] = backend.convert_to_numpy(self.model.optimizer.learning_rate)
         logs["lr"] = f"{logs['lr']:10.7f}"
         for lk in logs.keys():
+            if lk == "learning_rate":
+                # We don't print this since we calculate it ourselves.
+                continue
             lines.append([(self.printLocationsEpoch[lk], 1, lk)])
 
             outStr = self.formatStr(logs[lk])
@@ -579,7 +688,7 @@ class DisplayCallback(Callback):
 def getCallbacks(earlyStop: int, outputPrefix: str, plateauPatience: int, heads: list[dict],
                  trainBatchGen: generators.H5BatchGenerator,
                  valBatchGen: generators.H5BatchGenerator) -> \
-        tuple[EarlyStopping, ModelCheckpoint, ReduceLROnPlateau,
+        tuple[FixLossCallback, EarlyStopping, ModelCheckpoint, ReduceLROnPlateau,
               ApplyAdaptiveCountsLoss, DisplayCallback]:
     """Return a set of callbacks for your model.
 
@@ -615,13 +724,14 @@ def getCallbacks(earlyStop: int, outputPrefix: str, plateauPatience: int, heads:
         verbose = 1
     else:
         verbose = 0
+    fixLossCallback = FixLossCallback(heads=heads)
     earlyStopCallback = EarlyStopping(monitor="val_loss",
                                       patience=earlyStop,
                                       verbose=verbose,
                                       mode="min",
                                       restore_best_weights=True)
 
-    filepath = f"{outputPrefix}.checkpoint.model"
+    filepath = f"{outputPrefix}.checkpoint.keras"
     checkpointCallback = ModelCheckpoint(filepath,
                                          monitor="val_loss",
                                          verbose=verbose,
@@ -638,6 +748,6 @@ def getCallbacks(earlyStop: int, outputPrefix: str, plateauPatience: int, heads:
                                       adaptiveLossCallback=adaptiveLossCallback,
                                       trainBatchGen=trainBatchGen,
                                       valBatchGen=valBatchGen)
-    return (earlyStopCallback, checkpointCallback, plateauCallback,
+    return (fixLossCallback, earlyStopCallback, checkpointCallback, plateauCallback,
             adaptiveLossCallback, displayCallback)
 # Copyright 2022, 2023, 2024 Charles McAnany. This file is part of BPReveal. BPReveal is free software: You can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 2 of the License, or (at your option) any later version. BPReveal is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with BPReveal. If not, see <https://www.gnu.org/licenses/>.  # noqa

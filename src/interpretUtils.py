@@ -21,9 +21,10 @@ import pybedtools
 from bpreveal import logUtils
 from bpreveal import utils
 from bpreveal import ushuffle
-from bpreveal.internal.constants import NUM_BASES, ONEHOT_T, ONEHOT_AR_T, IMPORTANCE_T, \
-    H5_CHUNK_SIZE, MODEL_ONEHOT_T, PRED_T, QUEUE_TIMEOUT
+from bpreveal.internal.constants import IMPORTANCE_AR_T, NUM_BASES, ONEHOT_T, ONEHOT_AR_T, \
+    IMPORTANCE_T, H5_CHUNK_SIZE, MODEL_ONEHOT_T, PRED_T
 import bpreveal.internal.files as bprfiles
+from bpreveal.internal.crashQueue import CrashQueue
 
 
 class Query:
@@ -286,11 +287,10 @@ class FlatRunner:
         logUtils.info("Initializing interpretation runner.")
         self._profileSaver = profileSaver
         self._countsSaver = countsSaver
-        self._profileInQueue = multiprocessing.Queue(100)
-        self._countsInQueue = multiprocessing.Queue(100)
-        self._profileOutQueue = multiprocessing.Queue(100)
-        self._countsOutQueue = multiprocessing.Queue(100)
-
+        self._profileInQueue = CrashQueue(maxsize=100)
+        self._countsInQueue = CrashQueue(maxsize=100)
+        self._profileOutQueue = CrashQueue(maxsize=100)
+        self._countsOutQueue = CrashQueue(maxsize=100)
         self._genThread = multiprocessing.Process(target=_generatorThread,
             args=([self._profileInQueue, self._countsInQueue], generator, 1),
             daemon=True)
@@ -367,8 +367,8 @@ class PisaRunner:
                  receptiveField: int, kmerSize: int, numBatchers: int):
         logUtils.info("Initializing PISA runner.")
         self.numBatchers = numBatchers
-        self._inQueue = multiprocessing.Queue(100)
-        self._outQueue = multiprocessing.Queue(100)
+        self._inQueue = CrashQueue(maxsize=100)
+        self._outQueue = CrashQueue(maxsize=100)
 
         self._genThread = multiprocessing.Process(target=_generatorThread,
             args=([self._inQueue], generator, self.numBatchers),
@@ -379,7 +379,7 @@ class PisaRunner:
             case 2:
                 memFrac = 0.4
             case 3:
-                memFrac = 0.28
+                memFrac = 0.25
             case _:
                 logUtils.error("Very high number of batchers requested. "
                                "BPReveal has not been tested with 4 batchers!")
@@ -854,6 +854,7 @@ class ListGenerator(Generator):
 
     def __init__(self, sequences: Iterable[str],
                  passDataList: list | None = None):
+        self._readHead = 0
         self._sequences = list(sequences)
         self.numSamples = len(self._sequences)
         self.inputLength = len(self._sequences[0])
@@ -880,15 +881,12 @@ class ListGenerator(Generator):
 
     def __next__(self) -> Query:
         """Get the next query, or raise StopIteration."""
-        if len(self._sequences) == 0:
+        if len(self._sequences) == self._readHead:
             raise StopIteration()
-        # Eat the first sequence, index, and passData, then return a query.
-        oneHotSequence = utils.oneHotEncode(self._sequences[0])
-        self._sequences = self._sequences[1:]
-        idx = self._indexes[0]
-        self._indexes = self._indexes[1:]
-        passData = self._passData[0]
-        self._passData = self._passData[1:]
+        oneHotSequence = utils.oneHotEncode(self._sequences[self._readHead])
+        idx = self._indexes[self._readHead]
+        passData = self._passData[self._readHead]
+        self._readHead += 1
         q = Query(oneHotSequence, passData, idx)
         return q
 
@@ -1088,28 +1086,29 @@ class PisaBedGenerator(Generator):
         self.genome.close()
 
 
-def _flatBatcherThread(modelName: str, batchSize: int, inQueue: multiprocessing.Queue,
-                       outQueue: multiprocessing.Queue, headID: int, numHeads: int,
-                       taskIDs: list[int], numShuffles: int, mode: str, kmerSize: int) -> None:
+def _flatBatcherThread(modelName: str, batchSize: int, inQueue: CrashQueue,
+                       outQueue: CrashQueue, headID: int, numHeads: int,
+                       taskIDs: list[int], numShuffles: int, mode: str,
+                       kmerSize: int) -> None:
     """The thread that spins up the batcher."""
     logUtils.debug("Starting flat batcher thread.")
     b = _FlatBatcher(modelName, batchSize, outQueue, headID,
                      numHeads, taskIDs, numShuffles, mode, kmerSize)
     logUtils.debug("Batcher created.")
     while True:
-        query = inQueue.get(timeout=QUEUE_TIMEOUT)
+        query = inQueue.get()
         if query is None:
             break
         b.addSample(query)
     logUtils.debug("Last query received. Finishing batcher thread.")
     b.finishBatch()
-    outQueue.put(None, timeout=QUEUE_TIMEOUT)
+    outQueue.put(None)
     outQueue.close()
     logUtils.debug("Batcher thread finished.")
 
 
-def _pisaBatcherThread(modelName: str, batchSize: int, inQueue: multiprocessing.Queue,
-                       outQueue: multiprocessing.Queue, headID: int, taskID: int,
+def _pisaBatcherThread(modelName: str, batchSize: int, inQueue: CrashQueue,
+                       outQueue: CrashQueue, headID: int, taskID: int,
                        numShuffles: int, receptiveField: int, kmerSize: int,
                        memFrac: float) -> None:
     """The thread that spins up the batcher."""
@@ -1118,42 +1117,42 @@ def _pisaBatcherThread(modelName: str, batchSize: int, inQueue: multiprocessing.
                      receptiveField, kmerSize, memFrac)
     logUtils.debug("Batcher created.")
     while True:
-        query = inQueue.get(timeout=QUEUE_TIMEOUT)
+        query = inQueue.get()
         if query is None:
             break
         b.addSample(query)
     logUtils.debug("Last query received. Finishing batcher thread.")
     b.finishBatch()
-    outQueue.put(None, timeout=QUEUE_TIMEOUT)
+    outQueue.put(None)
     outQueue.close()
     logUtils.debug("Batcher thread finished.")
 
 
-def _generatorThread(inQueues: list[multiprocessing.Queue], generator: Generator,
+def _generatorThread(inQueues: list[CrashQueue], generator: Generator,
                      numBatchers: int) -> None:
     """The thread that spins up the generator and emits queries."""
     logUtils.debug("Starting generator thread.")
     generator.construct()
     for elem in generator:
         for inQueue in inQueues:
-            inQueue.put(elem, timeout=QUEUE_TIMEOUT)
+            inQueue.put(elem)
     for inQueue in inQueues:
         for _ in range(numBatchers):
-            inQueue.put(None, timeout=QUEUE_TIMEOUT)
+            inQueue.put(None)
         inQueue.close()
     logUtils.debug("Done with generator, None added to queue.")
     generator.done()
     logUtils.debug("Generator thread finished.")
 
 
-def _saverThread(outQueue: multiprocessing.Queue, saver: Saver,
+def _saverThread(outQueue: CrashQueue, saver: Saver,
                  numBatchers: int) -> None:
     """The thread that spins up the saver."""
     logUtils.debug("Saver thread started.")
     saver.construct()
     batchersLeft = numBatchers
     while True:
-        rv = outQueue.get(timeout=QUEUE_TIMEOUT)
+        rv = outQueue.get()
         if rv is None:
             batchersLeft -= 1
             if batchersLeft == 0:
@@ -1181,17 +1180,17 @@ class _PisaBatcher:
     :param memFrac: What fraction of the total GPU memory is this batcher allowed to use?
     """
 
-    def __init__(self, modelFname: str, batchSize: int, outQueue: multiprocessing.Queue,
+    def __init__(self, modelFname: str, batchSize: int, outQueue: CrashQueue,
                  headID: int, taskID: int, numShuffles: int, receptiveField: int,
                  kmerSize: int, memFrac: float):
         logUtils.info("Initializing batcher.")
         # pylint: disable=import-outside-toplevel
-        import bpreveal.internal.disableTensorflowLogging  # pylint: disable=unused-import # noqa
-        import tensorflow as tf
-        from bpreveal import shap
-        # pylint: enable=import-outside-toplevel
         utils.limitMemoryUsage(memFrac, 1024)
         self.model = utils.loadModel(modelFname)
+        import bpreveal.internal.disableTensorflowLogging  # pylint: disable=unused-import # noqa
+        from keras import ops
+        from bpreveal import shap
+        # pylint: enable=import-outside-toplevel
         if not isShappable(self.model):
             logUtils.error(f"The model you have provided ({modelFname}) is not shappable "
                            "because it contains LinearRegression layers. Re-train the "
@@ -1215,10 +1214,11 @@ class _PisaBatcher:
         #                           All samples in the batch-,  |    |           |             |
         #                                            Current |  |    |           |             |
         #                                             head   V  V    V           |             |
-        outTarget = tf.reduce_sum(self.model.outputs[headID][:, 0, taskID], axis=0, keepdims=True)
+        outTarget = ops.sum(self.model.outputs[headID][:, 0, taskID], axis=0, keepdims=True)
         self.profileExplainer = shap.TFDeepExplainer(
             (self.model.input, outTarget),
-            self.generateShuffles)
+            self.generateShuffles,
+            useOldKeras=self.model.useOldKeras)
         logUtils.info("Batcher initialized, Explainer initialized. Ready for Queries to explain.")
 
     def generateShuffles(self, modelInputs: list) -> list:
@@ -1298,7 +1298,7 @@ class _PisaBatcher:
             queryShapScores = shapScores[i, 0:self.receptiveField, :]  # type: ignore
             ret = PisaResult(queryPred, queryShufPreds, querySequence,  # type: ignore
                              queryShapScores, q.passData, q.index)
-            self.outQueue.put(ret, timeout=QUEUE_TIMEOUT)
+            self.outQueue.put(ret)
 
 
 class _FlatBatcher:
@@ -1320,18 +1320,31 @@ class _FlatBatcher:
     :param kmerSize: What length of kmer should have its distribution preserved in the shuffles?
     """
 
-    def __init__(self, modelFname: str, batchSize: int, outQueue: multiprocessing.Queue,
+    def __init__(self, modelFname: str, batchSize: int, outQueue: CrashQueue,
                  headID: int, numHeads: int, taskIDs: list[int], numShuffles: int, mode: str,
                  kmerSize: int):
         logUtils.info("Initializing batcher.")
         # pylint: disable=import-outside-toplevel, unused-import
-        import bpreveal.internal.disableTensorflowLogging # noqa
-        import tensorflow as tf
-        from bpreveal import shap
-        # pylint: disable=import-outside-toplevel
         utils.limitMemoryUsage(0.4, 1024)
-        tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
         self.model = utils.loadModel(modelFname)
+        import bpreveal.internal.disableTensorflowLogging # noqa
+        from bpreveal import shap
+        from keras import ops
+        import tensorflow as tf
+        import keras
+        # pylint: enable=import-outside-toplevel
+
+        class StopGradLayer(keras.Layer):
+            """Because the Tensorflow 2.16 upgrade wasn't painful enough...
+
+            This just wraps stop_gradient so that it can be called
+            with a KerasTensor.
+            """
+
+            def call(self, x: tf.Tensor) -> keras.KerasTensor:
+                """Actually stop the gradient."""
+                return ops.stop_gradient(x)
+
         if not isShappable(self.model):
             logUtils.error(f"The model you have provided ({modelFname}) is not shappable "
                            "because it contains LinearRegression layers. Re-train the "
@@ -1350,24 +1363,26 @@ class _FlatBatcher:
                 # Calculate the weighted meannormed logits that are used for the
                 # profile explanation.
                 profileOutput = self.model.outputs[headID]
-                stackedLogits = tf.stack([profileOutput[:, :, x] for x in taskIDs], axis=2)
+                stackedLogits = ops.stack([profileOutput[:, :, x] for x in taskIDs], axis=2)
                 inputShape = stackedLogits.shape
                 numSamples = inputShape[1] * inputShape[2]
-                logits = tf.reshape(stackedLogits, [-1, numSamples])
-                meannormedLogits = logits - tf.reduce_mean(logits, axis=1)[:, None]
-                stopgradMeannormedLogits = tf.stop_gradient(meannormedLogits)
-                softmaxOut = tf.nn.softmax(stopgradMeannormedLogits, axis=1)
-                weightedSum = tf.reduce_sum(softmaxOut * meannormedLogits, axis=1)
+                logits = ops.reshape(stackedLogits, [-1, numSamples])
+                meannormedLogits = ops.subtract(logits, ops.mean(logits, axis=1)[:, None])
+                stopgradMeannormedLogits = StopGradLayer()(meannormedLogits)
+                softmaxOut = ops.softmax(stopgradMeannormedLogits, axis=1)
+                weightedSum = ops.sum(softmaxOut * meannormedLogits, axis=1)
                 self.explainer = shap.TFDeepExplainer(
                     (self.model.input, weightedSum),
                     self.generateShuffles,
-                    combine_mult_and_diffref=combineMultAndDiffref)
+                    combine_mult_and_diffref=combineMultAndDiffref,
+                    useOldKeras=self.model.useOldKeras)
             case "counts":
                 # Now for counts - much easier!
                 countsMetric = self.model.outputs[numHeads + headID][:, 0]
                 self.explainer = shap.TFDeepExplainer((self.model.input, countsMetric),
                     self.generateShuffles,
-                    combine_mult_and_diffref=combineMultAndDiffref)
+                    combine_mult_and_diffref=combineMultAndDiffref,
+                    useOldKeras=self.model.useOldKeras)
 
         logUtils.info("Batcher initialized, Explainer initialized. Ready for Queries to explain.")
 
@@ -1421,22 +1436,23 @@ class _FlatBatcher:
             querySequence = oneHotBuf[i, :, :]
             queryScores = scores[i, :, :]  # type: ignore
             ret = FlatResult(querySequence, queryScores, q.passData, q.index)  # type: ignore
-            self.outQueue.put(ret, timeout=QUEUE_TIMEOUT)
+            self.outQueue.put(ret)
 
 
-def combineMultAndDiffref(mult, orig_inp, bg_data):  # pylint: disable=invalid-name  # noqa
+def combineMultAndDiffref(mult: IMPORTANCE_AR_T, originalInput: ONEHOT_AR_T,
+                          backgroundData: ONEHOT_AR_T) -> list:
     """Combine the shap multipliers and difference from reference to generate hypothetical scores.
 
     This is injected deep into shap and generates the hypothetical importance scores.
     """
     # This is copied from Zahoor's code.
     projectedHypotheticalContribs = \
-        np.zeros_like(bg_data[0]).astype("float")
-    assert len(orig_inp[0].shape) == 2
+        np.zeros_like(backgroundData[0]).astype("float")
+    assert len(originalInput[0].shape) == 2
     for i in range(NUM_BASES):  # We're going to go over all the base possibilities.
-        hypotheticalInput = np.zeros_like(orig_inp[0]).astype("float")
+        hypotheticalInput = np.zeros_like(originalInput[0]).astype("float")
         hypotheticalInput[:, i] = 1.0
-        hypotheticalDiffref = hypotheticalInput[None, :, :] - bg_data[0]
+        hypotheticalDiffref = hypotheticalInput[None, :, :] - backgroundData[0]
         hypotheticalContribs = hypotheticalDiffref * mult[0]
         projectedHypotheticalContribs[:, :, i] = np.sum(hypotheticalContribs, axis=-1)
     # There are no bias importances, so the np.zeros_like(orig_inp[1]) is not needed.

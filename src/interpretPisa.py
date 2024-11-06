@@ -134,17 +134,17 @@ Before BPReveal 4.0.0, this was two programs: ``interpretPisaBed`` and
 ``interpretPisaFasta``. They shared almost all of the same code, so they were
 merged into interpretPisa. The old names are still present in the bin/
 directory, where they symlink to the same python file in src.
-In BPReveal 6.0.0, the old symlinks will be removed.
+In BPReveal 5.0.0, support for calling the input fasta ``sequence-fasta`` was made an error.
+In BPReveal 6.0.0, the old symlinks will be removed and all reference to sequence-fasta
+be removed.
 
 
 API
 ---
 
 """
-import os
 import bpreveal.schema
 from bpreveal import logUtils
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "1"
 from bpreveal import interpretUtils
 from bpreveal.internal import interpreter
 
@@ -160,15 +160,18 @@ def main(config: dict) -> None:
         if config["correct-receptive-field"]:
             receptiveField += 1
     else:
-        logUtils.warning(
+        logUtils.info(
             "You have not specified correct-receptive-field in your configuration. "
-            "In BPReveal 5.0.0, the default shape of the output will change to fix "
-            "an off-by-one error in the receptive field calculation."
+            "As of BPReveal 5.0.0, the default shape of the output has increased by one "
+            "to fix an off-by-one error in the receptive field calculation."
             "Instructions for updating: "
             "Add 'correct-receptive-field': false to your config to keep using the "
             "(incorrect) receptive field calculation. Or add "
-            "'correct-receptive-field': true to your config to use the new (correct) "
-            "behavior.")
+            "'correct-receptive-field': true to your config silence this message "
+            "and keep using the new (correct) behavior. "
+            "In BPReveal 6.0.0, the receptive field will automatically be corrected "
+            "without any warning and this parameter will have no effect.")
+        receptiveField += 1
 
     kmerSize = 1
     if "kmer-size" in config:
@@ -187,10 +190,10 @@ def main(config: dict) -> None:
     if "fasta-file" in config or "sequence-fasta" in config:
         # We're doing a fasta run.
         if "sequence-fasta" in config:
-            logUtils.warning("DEPRECATION: You are referring to the fasta file in your "
-                             "PISA JSON as sequence-fasta. This is deprecated, please "
-                             "change the parameter name to fasta-file. This will be an "
-                             "error in BPReveal 6.0.0.")
+            logUtils.error("DEPRECATION: You are referring to the fasta file in your "
+                           "PISA JSON as sequence-fasta. This is deprecated, please "
+                           "change the parameter name to fasta-file. This will be an "
+                           "error in BPReveal 6.0.0.")
             config["fasta-file"] = config["sequence-fasta"]
         generator = interpretUtils.FastaGenerator(config["fasta-file"])
         genome = None
@@ -224,10 +227,10 @@ def main(config: dict) -> None:
 if __name__ == "__main__":
     import sys
     if sys.argv[0] in {"interpretPisaBed", "interpretPisaFasta"}:
-        logUtils.warning("DEPRECATION: You are calling the program " + sys.argv[0] + ". "
+        logUtils.error("DEPRECATION: You are calling the program " + sys.argv[0] + ". "
             "It is now just called interpretPisa and automatically detects if you're "
             "using a bed or fasta file. Instructions for updating: Call the program "
-            "interpretPisa. These old program names will be removed in BPReveal 5.0.0.")
+            "interpretPisa. These old program names will be removed in BPReveal 6.0.0.")
     configJson = interpreter.evalFile(sys.argv[1])
     assert isinstance(configJson, dict)
     bpreveal.schema.interpretPisa.validate(configJson)

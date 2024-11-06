@@ -25,8 +25,8 @@ model, and they are described at
 :py:mod:`trainSoloModel<bpreveal.trainSoloModel>`.
 
 solo-model-file
-    The name of the file (or directory, since
-    that's how keras likes to save models) that contains the solo model.
+    The name of the file (or directory, for BPReveal versions before 5.0)
+    that contains the solo model.
 
 passthrough
     This transformation does nothing to the solo model,
@@ -69,7 +69,7 @@ import bpreveal.internal.disableTensorflowLogging  # pylint: disable=unused-impo
 from bpreveal import utils
 if __name__ == "__main__":
     utils.setMemoryGrowth()
-import tf_keras as keras  # pylint: disable=wrong-import-order
+import keras  # pylint: disable=wrong-import-order
 from bpreveal import logUtils
 from bpreveal import models
 import bpreveal.training
@@ -95,11 +95,12 @@ def main(config: dict) -> None:
     model.compile(
         optimizer=keras.optimizers.Adam(
             learning_rate=config["settings"]["learning-rate"]),
-        loss=losses, loss_weights=lossWeights)
+        loss=losses, loss_weights=lossWeights,
+        metrics=losses)
     bpreveal.training.trainWithGenerators(model, config,
                                           config["settings"]["input-length"],
                                           config["settings"]["output-length"])
-    model.save(config["settings"]["output-prefix"] + ".model")
+    model.save(config["settings"]["output-prefix"] + ".keras")
     logUtils.info("Training job completed successfully.")
 
 

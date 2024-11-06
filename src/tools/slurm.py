@@ -38,7 +38,7 @@ def configSlurm(shellRcFiles: list[str] | str, envName: str, workingDirectory: s
         condaString += f"conda activate {envName}\n"
 
     return {"workDir": workingDirectory, "sourceShell": sourceShell, "condaString": condaString,
-            "gpuType": "a100", "maxJobs": maxJobs}
+            "gpuType": "any", "maxJobs": maxJobs}
 
 
 def configSlurmLocal(shellRcFiles: list[str] | str, envName: str, workingDirectory: str,
@@ -188,7 +188,7 @@ SLURM_HEADER_GPU = """#!/usr/bin/env zsh
 #SBATCH --time={time:s}
 #SBATCH --output={workdir:s}/logs/{jobName:s}_%A_%a.out
 #SBATCH --partition=gpu
-#SBATCH --gres gpu:{gpuType:s}:1
+#SBATCH --gres gpu{gpuStr:s}:1
 #SBATCH --array=1-{numJobs:d}%{maxJobs:d}
 
 {sourcerc:s}
@@ -214,10 +214,14 @@ def jobsGpu(config: dict, tasks: list[str], jobName: str, ntasks: int, mem: int,
     :param time: How long should the job run, in the format "hh:mm:ss"
     :return: A string giving the name of the slurm job script that was generated.
     """
+    if config["gpuType"] == "any":
+        gpuStr = ""
+    else:
+        gpuStr = f":{config['gpuType']}"
     cmd = SLURM_HEADER_GPU.format(jobName=jobName, ntasks=ntasks, mem=mem,
                                   time=time, numJobs=len(tasks), sourcerc=config["sourceShell"],
                                   workdir=config["workDir"], condastring=config["condaString"],
-                                  gpuType=config["gpuType"], maxJobs=config["maxJobs"])
+                                  gpuStr=gpuStr, maxJobs=config["maxJobs"])
     cmd += extraHeader + "\n\n"
 
     for i, task in enumerate(tasks):
@@ -230,25 +234,7 @@ def jobsGpu(config: dict, tasks: list[str], jobName: str, ntasks: int, mem: int,
     return outFname
 
 
-def writeDependencyScript(config: dict, jobspecs: list[list[str | list[str]]],
-                          wholeJobName: str, baseJobId: int | None = None,
-                          local: bool = False,
-                          cancelScript: str | None = None):
-    """Write a bash script that queues up a set of jobs with a given dependency structure.
-
-    :param config: The configuration dict from configSlurm.
-    :param jobspecs: A jobspec is a tuple of (str, [str,str,str,...])
-        where the first string is the name of the slurm file to run.
-        The strings after it are the names of the slurm files that the
-        job needs to finish before it can run (i.e., its dependencies).
-    :param wholeJobName: The name of the script file to generate (excluding extension)
-    :param baseJobId: If provided, make all jobs be dependencies of this job ID.
-    :param local: Should this be run locally? If so, just write a shell script that runs
-        all the jobs, with no slurm dependency stuff.
-    :param cancelScript: Name of a script to write that contains commands to
-        cancel all of the jobs in this array (including extension)
-    """
-    outFname = config["workDir"] + f"/slurm/{wholeJobName}.zsh"
+def _buildJobTree(jobspecs: list[list[str | list[str]]]) -> tuple[list[str], dict[str, int]]:
     jobsRemaining = jobspecs[:]
     jobOrder = []
     depsSatisfied = []
@@ -275,6 +261,29 @@ def writeDependencyScript(config: dict, jobspecs: list[list[str | list[str]]],
         job, deps = jobSpec
         jobToDepNumber[job] = i
         i += 1
+    return jobOrder, jobToDepNumber
+
+
+def writeDependencyScript(config: dict, jobspecs: list[list[str | list[str]]],
+                          wholeJobName: str, baseJobId: int | None = None,
+                          local: bool = False,
+                          cancelScript: str | None = None) -> None:
+    """Write a bash script that queues up a set of jobs with a given dependency structure.
+
+    :param config: The configuration dict from configSlurm.
+    :param jobspecs: A jobspec is a tuple of (str, [str,str,str,...])
+        where the first string is the name of the slurm file to run.
+        The strings after it are the names of the slurm files that the
+        job needs to finish before it can run (i.e., its dependencies).
+    :param wholeJobName: The name of the script file to generate (excluding extension)
+    :param baseJobId: If provided, make all jobs be dependencies of this job ID.
+    :param local: Should this be run locally? If so, just write a shell script that runs
+        all the jobs, with no slurm dependency stuff.
+    :param cancelScript: Name of a script to write that contains commands to
+        cancel all of the jobs in this array (including extension)
+    """
+    outFname = config["workDir"] + f"/slurm/{wholeJobName}.zsh"
+    jobOrder, jobToDepNumber = _buildJobTree(jobspecs)
 
     with open(outFname, "w") as fp:
         fp.write("#!/usr/bin/env zsh\n")

@@ -1,9 +1,8 @@
 """Functions to build BPNet-style models."""
-import tensorflow as tf
-import tf_keras as keras
-from tf_keras.backend import int_shape
-import tf_keras.layers as klayers
-import tf_keras.models as kmodels
+from tensorflow.keras.backend import int_shape  # type: ignore
+import keras.layers as klayers  # type: ignore
+import keras.models as kmodels  # type: ignore
+from keras import activations
 from bpreveal import layers as bprlayers
 from bpreveal import logUtils
 from bpreveal.internal.constants import NUM_BASES
@@ -42,7 +41,7 @@ def _soloModelHead(dilateOutput: klayers.Layer, individualHead: dict,
     return (profile, counts)
 
 
-def soloModel(inputLength: int, outputLength: int,  # pylint: disable=unused-argument
+def soloModel(inputLength: int, outputLength: int,
               numFilters: int, numLayers: int, inputFilterWidth: int,
               outputFilterWidth: int, headList: list[dict],
               modelName: str) -> kmodels.Model:
@@ -72,8 +71,9 @@ def soloModel(inputLength: int, outputLength: int,  # pylint: disable=unused-arg
     It is an error to call this function with an inconsistent network structure,
     such as an input that is too long.
     """
+    del outputLength
     logUtils.debug("Building solo model")
-    inputLayer = keras.Input((inputLength, NUM_BASES), name=f"{modelName}_input")
+    inputLayer = klayers.Input((inputLength, NUM_BASES), name=f"{modelName}_input")
 
     initialConv = klayers.Conv1D(
             filters=numFilters, kernel_size=inputFilterWidth, padding="valid",  # noqa
@@ -100,7 +100,7 @@ def soloModel(inputLength: int, outputLength: int,  # pylint: disable=unused-arg
                            outputFilterWidth=outputFilterWidth)
         countsOutputs.append(h[1])
         profileOutputs.append(h[0])
-    m = keras.Model(inputs=inputLayer,
+    m = kmodels.Model(inputs=inputLayer,
                     outputs=profileOutputs + countsOutputs,
                     name=f"{modelName}_model")
     return m
@@ -136,7 +136,7 @@ def _buildSimpleTransformationModel(architectureSpecification: dict,
                         name=f"sigmoid_in_linear_{headName}")\
                     (inputLayer)  # noqa
                 sigmoided = klayers.Activation(
-                        activation=keras.activations.sigmoid,  # noqa
+                        activation=activations.sigmoid,  # noqa
                         name=f"sigmoid_activation_{headName}")\
                     (inputLinear)  # noqa
                 outputLinear = bprlayers.linearRegression(
@@ -148,7 +148,7 @@ def _buildSimpleTransformationModel(architectureSpecification: dict,
                         name=f"relu_in_linear_{headName}")\
                     (inputLayer)  # noqa
                 sigmoided = klayers.Activation(
-                        activation=keras.activations.relu,  # noqa
+                        activation=activations.relu,  # noqa
                         name=f"relu_activation_{headName}")\
                     (inputLinear)  # noqa
                 outputLinear = bprlayers.linearRegression(
@@ -250,7 +250,7 @@ def transformationModel(soloModelIn: kmodels.Model,
                 countsArchitectureSpecification=countsArchitectureSpecification)
         profileOutputs.append(profileHead)
         countsOutputs.append(countsHead)
-    m = keras.Model(inputs=soloModelIn.input,
+    m = kmodels.Model(inputs=soloModelIn.input,
                     outputs=profileOutputs + countsOutputs,
                     name="transformation_model")
     return m
@@ -359,31 +359,19 @@ def combinedModel(inputLength: int, outputLength: int, numFilters: int,
             # This is because we want to model
             # counts = biasCounts + residualCounts noqa
             # but the counts in BPNet are log-counts.
-            # TODO: Rewrite this using tf.math.reduce_logsumexp, since it would avoid
-            # some numerical stability problems.
-            absBiasCounts = klayers.Activation(
-                    tf.math.exp,  # noqa
-                    name=f"combined_exponentiate_bias_{headName}")\
-                (readyBiasHeads[i + numHeads])  # noqa  # type: ignore
-            absResidualCounts = klayers.Activation(
-                    tf.math.exp,  # noqa
-                    name=f"combined_exp_residual_{headName}") \
-                (residualModel.outputs[i + numHeads])  # noqa  # type: ignore
-            absCombinedCounts = klayers.Add(
-                    name=f"combined_add_counts_{headName}") \
-                ([absBiasCounts, absResidualCounts])  # noqa
-            addCounts = klayers.Activation(
-                    tf.math.log,  # noqa
-                    name=f"combined_logcounts_{headName}")\
-                (absCombinedCounts)  # noqa
+            addCounts = bprlayers.CountsLogSumExp(name=f"combined_logcounts_{headName}")\
+                (readyBiasHeads[i + numHeads], residualModel.outputs[i + numHeads])  # noqa
         else:
             # The user doesn't want the counts value from the regression used,
             # just the profile part. This is useful when the concept of a
             # "negative peak set" is meaningless, like in MNase.
-            addCounts = residualModel.outputs[i + numHeads]  # type: ignore
+            # I use an identity layer so that I can rename it so there's not a spooky
+            # 'solo' loss component in a combined model.
+            addCounts = klayers.Identity(name=f"combined_logcounts_{headName}")\
+                (residualModel.outputs[i + numHeads])  # type: ignore  # noqa
         combinedProfileHeads.append(addProfile)
         combinedCountsHeads.append(addCounts)
-    combModel = keras.Model(inputs=inputLayer,
+    combModel = kmodels.Model(inputs=inputLayer,
                             outputs=combinedProfileHeads + combinedCountsHeads,
                             name="combined_model")
     logUtils.debug("Model built")

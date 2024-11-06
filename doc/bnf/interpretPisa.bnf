@@ -1,27 +1,20 @@
 <pisa-fasta-configuration> ::=
-    {"model-file" : <file-name>,
-     <bed-or-fasta>,
-     "num-shuffles" : <integer>,
-     "head-id" : <integer>,
-     "task-id" : <integer>,
-     "output-h5" : <file-name>,
-     "output-length" : <integer>,
-     "input-length" : <integer>,
-     <correct-receptive-field-section>
-     <kmer-size-section>
-     <num-threads-section>
-     <verbosity-section>}
+     {
+        "model-file" : <file-name>,
+        <bed-or-fasta>,
+        "num-shuffles" : <integer>,
+        "head-id" : <integer>,
+        "task-id" : <integer>,
+        "output-h5" : <file-name>,
+        "output-length" : <integer>,
+        "input-length" : <integer>,
+        «"correct-receptive-field" : <boolean>,»
+        «"kmer-size" : <integer>,»
+        «"num-threads" : <integer>,»
+        <verbosity-section>
+    }
 
 <bed-or-fasta> ::=
     "genome" : <file-name>,
     "bed-file": <file-name>
   | "fasta-file" : <file-name>
-  | "sequence-fasta" : <file-name> (DEPRECATED)
-
-<kmer-size-section> ::=
-    "kmer-size" : <integer>,
-  | <empty>
-
-<correct-receptive-field-section> ::=
-    "correct-receptive-field" : <boolean>,
-  | <empty>

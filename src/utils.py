@@ -1,11 +1,10 @@
 """Lots of helpful utilities for working with models."""
 from collections import deque
 import multiprocessing
-import os
-import queue
-import re
+import multiprocessing.synchronize
 import subprocess as sp
 import typing
+import queue
 from collections.abc import Iterable
 import h5py
 import scipy
@@ -17,8 +16,9 @@ from bpreveal import logUtils
 # find them.
 from bpreveal.logUtils import setVerbosity, wrapTqdm  # pylint: disable=unused-import  # noqa
 from bpreveal.internal.constants import NUM_BASES, ONEHOT_AR_T, PRED_AR_T, ONEHOT_T, \
-    QUEUE_TIMEOUT, LOGCOUNT_T, LOGIT_AR_T, IMPORTANCE_AR_T, IMPORTANCE_T, PRED_T
+    LOGCOUNT_T, LOGIT_AR_T, IMPORTANCE_AR_T, IMPORTANCE_T, PRED_T
 from bpreveal.internal import constants
+from bpreveal.internal.crashQueue import CrashQueue
 
 
 def loadModel(modelFname: str):  # noqa: ANN201
@@ -27,12 +27,12 @@ def loadModel(modelFname: str):  # noqa: ANN201
     .. note::
         Sets :py:data:`bpreveal.internal.constants.GLOBAL_TENSORFLOW_LOADED`.
 
-    :param modelFname: The name of the model that Keras saved earlier, typically
-        a directory.
-    :return: A Keras Model object.
+    :param modelFname: The name of the model that Keras saved earlier, either a directory
+        ending in ``.model`` for models trained before BPReveal 5.0.0, or a file ending in
+        ``.keras`` for models trained with BPReveal 5.0.0 or later.
+    :return: A Keras ``Model`` object.
 
-    The returned model does NOT support additional training, since it uses a
-    dummy loss.
+    The returned model does NOT support additional training, since it uses a dummy loss.
 
     **Example:**
 
@@ -43,16 +43,44 @@ def loadModel(modelFname: str):  # noqa: ANN201
         preds = m.predict(myOneHotSequences)
 
     """
-    # pylint: disable=import-outside-toplevel
-    import bpreveal.internal.disableTensorflowLogging  # pylint: disable=unused-import # noqa
-    from tf_keras.models import load_model
-    from bpreveal.losses import multinomialNll, dummyMse
-    # pylint: enable=import-outside-toplevel
-    model = load_model(filepath=modelFname,
-                       custom_objects={"multinomialNll": multinomialNll,
-                                       "reweightableMse": dummyMse})
-    constants.setTensorflowLoaded()
-    return model
+    # TODO: Once Keras 4.3.2 is out, remove this lock.
+    with constants.MODEL_LOAD_LOCK:
+        logUtils.debug(f"Acquired lock to load model {modelFname}")
+        # pylint: disable=import-outside-toplevel
+        import bpreveal.internal.disableTensorflowLogging  # pylint: disable=unused-import # noqa
+        from bpreveal.losses import multinomialNll, dummyMse
+        # pylint: enable=import-outside-toplevel
+        constants.setTensorflowLoaded()
+        ret = None
+        if modelFname.endswith("model"):
+            try:
+                logUtils.info(
+                    "You are attempting to a load a model with a '.model' extension. As of "
+                    "BPReveal 5.0.0, models are given the extension '.keras' because keras "
+                    "3.0 requires it. I will attempt to load the old-style model, but be "
+                    "prepared for some janky behavior and possible bugs.")
+                import tf_keras  # pylint: disable=import-outside-toplevel
+                ret = tf_keras.models.load_model(filepath=modelFname,
+                            custom_objects={"multinomialNll": multinomialNll,
+                                            "reweightableMse": dummyMse})
+                ret.useOldKeras = True
+                logUtils.debug(f"Loaded old-style model {modelFname}.")
+            except OSError:
+                logUtils.error(
+                    f"You specified a model named {modelFname} but I couldn't find it. "
+                    "Attempting to load a model with a '.keras' extension. If this "
+                    "works, you should update your configuration file to use the new "
+                    "extension. This automatic renaming will be removed in BPReveal 7.0.0.")
+                modelFname = modelFname[:-5] + "keras"
+        if ret is None:
+            # pylint: disable=import-outside-toplevel
+            from keras.models import load_model  # type: ignore
+            # pylint: enable=import-outside-toplevel
+            ret = load_model(filepath=modelFname)
+            ret.useOldKeras = False
+            logUtils.debug(f"Loaded new-style model {modelFname}.")
+    logUtils.debug(f"Released lock to load model {modelFname}")
+    return ret
 
 
 def setMemoryGrowth() -> None:
@@ -149,6 +177,7 @@ def loadPisa(fname: str) -> IMPORTANCE_AR_T:
     from this function would start at position '3752 and end at 3752 + numEntries.
 
     """
+    logUtils.debug(f"Loading PISA data from {fname}")
     with h5py.File(fname, "r") as fp:
         pisaShap = np.array(fp["shap"])
     pisaVals = np.sum(pisaShap, axis=2)
@@ -194,46 +223,30 @@ def limitMemoryUsage(fraction: float, offset: float) -> float:
     """
     assert 0.0 < fraction < 1.0, "Must give a memory fraction between 0 and 1."
     free = total = 0.0
-    if "CUDA_VISIBLE_DEVICES" in os.environ:
-        # Do we have a MIG GPU? If so, I need to get its memory available from its name.
-        if len(os.environ["CUDA_VISIBLE_DEVICES"]) > 10:
-            if os.environ["CUDA_VISIBLE_DEVICES"][:3] == "MIG":
-                # Yep, it's a MIG. Grab its properties from nvidia-smi.
-                logUtils.debug("Found a MIG card, attempting to guess memory "
-                              "available based on name.")
-                cmd = ["nvidia-smi", "-L"]
-                ret = sp.run(cmd, capture_output=True, check=True)
-                lines = ret.stdout.decode("utf-8").split("\n")
-                devices = os.environ["CUDA_VISIBLE_DEVICES"]
-                matchRe = re.compile(fr".*MIG.* ([0-9]+)g\.([0-9]+)gb.*{devices}.*")
-                if (smiOut := re.match(matchRe, lines[1])):
-                    total = free = float(smiOut[2]) * 1024  # Convert to MiB
-                    logUtils.debug(f"Found {total} GB of memory.")
-                else:
-                    raise ValueError("Could not parse nvidia-smi line: " + lines[1])
-    if total == 0.0:
-        # We didn't find memory in CUDA_VISIBLE_DEVICES.
-        cmd = ["nvidia-smi", "--query-gpu=memory.total,memory.free", "--format=csv"]
-        try:
-            ret = sp.run(cmd, capture_output=True, check=True)
-        except sp.CalledProcessError as e:
-            logUtils.error("Problem parsing nvidia-smi output.")
-            logUtils.error(e.stdout.decode("utf-8"))
-            logUtils.error(e.stderr.decode("utf-8"))
-            logUtils.error(str(e.returncode))
-            raise
-        line = ret.stdout.decode("utf-8").split("\n")[1]
-        logUtils.debug(f"Memory usage limited based on {line}")
-        lsp = line.split(" ")
-        total = float(lsp[0])
-        free = float(lsp[2])
-    assert total * fraction < free, "Attempting to request more memory than is free!"
+    # We didn't find memory in CUDA_VISIBLE_DEVICES.
+    cmd = ["nvidia-smi", "--query-gpu=memory.total,memory.free", "--format=csv"]
+    try:
+        ret = sp.run(cmd, capture_output=True, check=True)
+    except sp.CalledProcessError as e:
+        logUtils.error("Problem running nvidia-smi. Did you remember to allocate a GPU?")
+        logUtils.error(e.stdout.decode("utf-8"))
+        logUtils.error(e.stderr.decode("utf-8"))
+        logUtils.error(str(e.returncode))
+        raise
+    line = ret.stdout.decode("utf-8").split("\n")[1]
+    logUtils.debug(f"Memory usage limited based on {line}")
+    lsp = line.split(" ")
+    total = float(lsp[0])
+    free = float(lsp[2])
+    assert total * fraction < free, f"Attempting to request more memory ({total * fraction}) "\
+        f"than is free ({free})!"
 
     # pylint: disable=import-outside-toplevel, unused-import
     import bpreveal.internal.disableTensorflowLogging  # noqa
     import tensorflow as tf
     # pylint: enable=import-outside-toplevel, unused-import
     gpus = tf.config.list_physical_devices("GPU")
+    logUtils.debug(f"Available devices: {gpus}")
     useMem = int(total * fraction - offset)
     tf.config.set_logical_device_configuration(
         device=gpus[0],
@@ -243,19 +256,19 @@ def limitMemoryUsage(fraction: float, offset: float) -> float:
     return useMem
 
 
-def loadChromSizes(chromSizesFname: str | None = None,
+def loadChromSizes(*, chromSizesFname: str | None = None,
                    genomeFname: str | None = None,
                    bwHeader: dict[str, int] | None = None,
                    bw: pyBigWig.pyBigWig | None = None,
                    fasta: pysam.FastaFile | None = None) -> dict[str, int]:
     """Read in a chrom sizes file and return a dictionary mapping chromosome name → size.
 
-    Exactly one of the supplied parameters may be None.
+    Exactly one of the parameters may be specified, all others must be ``None``.
 
     :param chromSizesFname: The name of a chrom.sizes file on disk.
     :param genomeFname: The name of a genome fasta file on disk.
     :param bwHeader: A dictionary loaded from a bigwig.
-        (Using this makes this function a no-op.)
+        (Using this makes this function an identity function.)
     :param bw: An opened bigwig file.
     :param fasta: An opened genome fasta.
 
@@ -304,7 +317,7 @@ def loadChromSizes(chromSizesFname: str | None = None,
     raise ValueError("You can't ask for chrom sizes without some argument!")
 
 
-def blankChromosomeArrays(genomeFname: str | None = None,
+def blankChromosomeArrays(*, genomeFname: str | None = None,
                           chromSizesFname: str | None = None,
                           bwHeader: dict[str, int] | None = None,
                           chromSizes: dict[str, int] | None = None,
@@ -315,7 +328,8 @@ def blankChromosomeArrays(genomeFname: str | None = None,
     """Get a set of blank numpy arrays that you can use to save genome-wide data.
 
     Exactly one of ``chromSizesFname``, ``genomeFname``, ``bwHeader``,
-    ``chromSizes``, ``bw``, or ``fasta`` may be None.
+    ``chromSizes``, ``bw``, or ``fasta`` may be specified, all other
+    parameters must be None.
 
     :param chromSizesFname: The name of a chrom.sizes file on disk.
     :param genomeFname: The name of a genome fasta file on disk.
@@ -329,7 +343,7 @@ def blankChromosomeArrays(genomeFname: str | None = None,
     :return: A dict mapping chromosome name to a numpy array.
 
     The returned dict will have an element for every chromosome in the input.
-    The shape of each element of the dictionary will be (chromosome-length, numTracks).
+    The shape of each element of the dictionary will be ``(chromosome-length, numTracks)``.
 
     See :py:func:`loadChromSizes<bpreveal.utils.loadChromSizes>` for an example.
     """
@@ -360,8 +374,8 @@ def writeBigwig(bwFname: str, chromDict: dict[str, np.ndarray] | None = None,
 
     :param bwFname: The name of the bigwig file to write.
     :param chromDict: A dict mapping chromosome names to the data for that
-        chromosome. The data should have shape (chromosome-length,).
-    :param regionList: A list of (chrom, start, end) tuples giving the
+        chromosome. The data should have shape ``(chromosome-length,)``.
+    :param regionList: A list of ``(chrom, start, end)`` tuples giving the
         locations where the data should be saved.
     :param regionData: An iterable with the same length as ``regionList``.
         The ith element of ``regionData`` will be
@@ -405,12 +419,12 @@ def oneHotEncode(sequence: str, allowN: bool = False, alphabet: str = "ACGT") ->
 
     :param sequence: A DNA sequence to encode.
         May contain uppercase and lowercase letters.
-    :param allowN: If False (the default), raise an AssertionError if
+    :param allowN: If ``False`` (the default), raise an ``AssertionError`` if
         the sequence contains letters other than ``ACGTacgt``.
-        If True, any other characters will be encoded as ``[0, 0, 0, 0]``.
+        If ``True``, any other characters will be encoded as ``[0, 0, 0, 0]``.
     :param alphabet: The order of the bases in the output array.
-    :return: An array with shape (len(sequence), NUM_BASES).
-    :rtype: ONEHOT_AR_T
+    :return: An array with shape ``(len(sequence), NUM_BASES)``.
+    :rtype: ``ONEHOT_AR_T``
 
 
     The columns are, in order, A, C, G, and T.
@@ -463,13 +477,13 @@ def oneHotEncode(sequence: str, allowN: bool = False, alphabet: str = "ACGT") ->
 def oneHotDecode(oneHotSequence: np.ndarray, alphabet: str = "ACGT") -> str:
     """Take a one-hot encoded sequence and turn it back into a string.
 
-    :param oneHotSequence: An array of shape (n, NUM_BASES). It may have any type that can be
-        converted into a uint8.
+    :param oneHotSequence: An array of shape ``(n, NUM_BASES)``. It may have any type
+        that can be converted into a uint8.
     :param alphabet: The order in which the bases are encoded.
 
     Given an array representing a one-hot encoded sequence, convert it back
-    to a string. The input shall have shape (sequenceLength, NUM_BASES), and the output
-    will be a Python string.
+    to a string. The input shall have shape ``(sequenceLength, NUM_BASES)``,
+    and the output will be a Python string.
     The decoding is performed based on the following mapping::
 
         [1, 0, 0, 0] → A
@@ -498,13 +512,13 @@ def logitsToProfile(logitsAcrossSingleRegion: LOGIT_AR_T,
                     logCountsAcrossSingleRegion: LOGCOUNT_T) -> PRED_AR_T:
     """Take logits and logcounts and turn it into a profile.
 
-    :param logitsAcrossSingleRegion: An array of shape (output-length * num-tasks)
-    :type logitsAcrossSingleRegion: LOGIT_AR_T
+    :param logitsAcrossSingleRegion: An array of shape ``(output-length * num-tasks)``
+    :type logitsAcrossSingleRegion: ``LOGIT_AR_T``
     :param logCountsAcrossSingleRegion: A single floating-point number
-    :type logCountsAcrossSingleRegion: LOGCOUNT_T
-    :return: An array of shape (output-length * num-tasks), giving the profile
+    :type logCountsAcrossSingleRegion: ``LOGCOUNT_T``
+    :return: An array of shape ``(output-length * num-tasks)``, giving the profile
         predictions.
-    :rtype: PRED_AR_T
+    :rtype: ``PRED_AR_T``
 
     **Example:**
 
@@ -556,25 +570,25 @@ def easyPredict(sequences: Iterable[str] | str, modelFname: str) -> \
     :param sequences: The DNA sequence(s) that you want to predict on.
     :param modelFname: The name of the Keras model to use.
     :return: An array of profiles or a single profile, depending on ``sequences``
-    :rtype: list[list[PRED_AR_T]] or list[PRED_AR_T]
+    :rtype: ``list[list[PRED_AR_T]]`` or ``list[PRED_AR_T]``
 
     Spawns a separate process to make a single batch of predictions,
     then shuts it down. Why make it complicated? Because it frees the
     GPU after it's done so other programs and stuff can use it.
     If ``sequences`` is a single string containing a sequence to predict
     on, that's okay, it will be treated as a length-one list of sequences
-    to predict. ``sequences`` should be as long as the input length of
+    to predict. The ``sequences`` string should be as long as the input length of
     your model.
 
     If you passed in an iterable of strings (like a list of strings),
     the shape of the returned profiles will be
-    (numSequences x numHeads x outputLength x numTasks).
+    ``(numSequences x numHeads x outputLength x numTasks)``.
     Since different heads can have different numbers of tasks, the returned object
     will be a list (one entry per sequence) of lists (one entry per head)
-    of arrays of shape (outputLength x numTasks).
+    of arrays of shape ``(outputLength x numTasks)``.
     If, instead, you passed in a single string as ``sequences``,
-    it will be (numHeads x outputLength x numTasks). As before, this will be a list
-    (one entry per head) of arrays of shape (outputLength x numTasks)
+    it will be ``(numHeads x outputLength x numTasks)``. As before, this will be a list
+    (one entry per head) of arrays of shape ``(outputLength x numTasks)``
 
     **Example:**
 
@@ -611,7 +625,7 @@ def easyPredict(sequences: Iterable[str] | str, modelFname: str) -> \
     else:
         # In case we got some weird iterable, turn it into a list.
         sequences = list(sequences)
-
+    logUtils.debug(f"Running {len(sequences)} predictions using model {modelFname}")
     predictor = ThreadedBatchPredictor(modelFname, 64, start=False)
     ret = []
     remainingToRead = 0
@@ -673,37 +687,37 @@ def easyInterpretFlat(sequences: Iterable[str] | str, modelFname: str,
         contribution scores or just the actual ones.
 
     :return: A dict containing the importance scores.
-    :rtype: dict[str, IMPORTANCE_AR_T | ONEHOT_AR_T]
+    :rtype: ``dict[str, IMPORTANCE_AR_T | ONEHOT_AR_T]``
 
     If you passed in an iterable of strings (like a list), then the output's first
-    dimension will be the number of sequences and it will depend on keepHypotheticals:
+    dimension will be the number of sequences and it will depend on ``keepHypotheticals``:
 
-    * If keepHypotheticals is True, then it will be structured so::
+    * If ``keepHypotheticals == True``, then it will be structured so::
 
             {"profile": array of shape (numSequences x inputLength x NUM_BASES),
              "counts": array of shape (numSequences x inputLength x NUM_BASES),
              "sequence": array of shape (numSequences x inputLength x NUM_BASES)}
 
       This dict has the same meaning as shap scores stored in an
-      interpretFlat hdf5.
+      :py:mod:`interpretFlat<bpreveal.interpretFlat>` hdf5.
 
-    * If keepHypotheticals is False (the default), then the
+    * If ``keepHypotheticals == False`` (the default), then the
       shap scores will be condensed down to the normal scores that we plot
       in a genome browser::
 
           {"profile": array of shape (numSequences x inputLength),
            "counts": array of shape (numSequences x inputLength)}
 
-    However, if sequences was a string instead of an iterable, then the numSequences
+    However, if ``sequences`` was a string instead of an iterable, then the ``numSequences``
     dimension will be suppressed:
 
-    * For keepHypotheticals == True, you get::
+    * For ``keepHypotheticals == True``, you get::
 
           {"profile": array of shape (inputLength x NUM_BASES),
            "counts": array of shape (inputLength x NUM_BASES),
            "sequence": array of shape (inputLength x NUM_BASES)}
 
-    * and if keepHypotheticals is False, you get::
+    * and if ``keepHypotheticals == False``, you get::
 
           {"profile": array of shape (inputLength,),
            "counts": array of shape (inputLength,)}
@@ -718,6 +732,9 @@ def easyInterpretFlat(sequences: Iterable[str] | str, modelFname: str,
     if isinstance(sequences, str):
         sequences = [sequences]
         singleReturn = True
+    else:
+        sequences = list(sequences)
+    logUtils.debug(f"Running {len(sequences)} shaps using model {modelFname}")
     generator = ListGenerator(sequences)
     profileSaver = FlatListSaver(generator.numSamples, generator.inputLength)
     countsSaver = FlatListSaver(generator.numSamples, generator.inputLength)
@@ -755,16 +772,17 @@ class BatchPredictor:
         Sets :py:data:`bpreveal.internal.constants.GLOBAL_TENSORFLOW_LOADED`.
 
     It's doubly-useful if you are generating sequences dynamically. Here's how
-    it works. You first create a predictor by calling BatchPredictor(modelName,
-    batchSize). If you're not sure, a batch size of 64 is probably good.
+    it works. You first create a predictor by calling
+    ``BatchPredictor(modelName, batchSize)``.
+    If you're not sure, a batch size of 64 is probably good.
 
     Now, you submit any sequences you want predicted, using the submit methods.
 
     Once you've submitted all of your sequences, you can get your results with
-    the getOutput() method.
+    the ``getOutput()`` method.
 
-    Note that the getOutput() method returns *one* result at a time, and
-    you have to call getOutput() once for every time you called one of the
+    Note that the ``getOutput()` method returns *one* result at a time, and
+    you have to call ``getOutput()`` once for every time you called one of the
     submit methods.
 
     The typical use case for a batcher streams its input, so you'd normally check
@@ -783,7 +801,7 @@ class BatchPredictor:
             preds, outLabel = batcher.getOutput()
             processPredictions(preds, outLabel)
 
-    Using the batcher in this way (checking to see if outputReady() after every
+    Using the batcher in this way (checking to see if ``outputReady()`` after every
     query submission) has the benefit of using very little memory. Instead of
     building a huge array of queries and then predicting them in one go, the
     batcher analyzes them as you come up with them. This means you can analyze
@@ -801,7 +819,7 @@ class BatchPredictor:
             processPredictions(preds)
 
     In this example, I'm not using the labels, so I just pass in None
-    as the label for each sequence and ignore the labels from getOutput()
+    as the label for each sequence and ignore the labels from ``getOutput()``
 
     You should not, however, demand an output after every submission, since this
     will use a batch size of one and be painfully slow::
@@ -816,11 +834,11 @@ class BatchPredictor:
         the other BPReveal tools.
     :param batchSize: is the number of samples that should be run simultaneously
         through the model.
-    :param start: Ignored, but present here to give BatchPredictor the same API
-        as ThreadedBatchPredictor. Creating a BatchPredictor loads up the model
+    :param start: Ignored, but present here to give ``BatchPredictor`` the same API
+        as ``ThreadedBatchPredictor``. Creating a ``BatchPredictor`` loads up the model
         and sets memory growth right then and there.
     :param numThreads: Ignored, only present for compatibility with the API for
-        ThreadedBatchPredictor. A (non-threaded)BachPredictor runs its calculations
+        ``ThreadedBatchPredictor``. A (non-threaded)``BachPredictor`` runs its calculations
         in the main thread and will block when it's actually doing calculations.
     """
 
@@ -830,7 +848,7 @@ class BatchPredictor:
 
         This will load your model, and get ready to make predictions.
         """
-        logUtils.debug("Creating batch predictor.")
+        logUtils.debug(f"Creating batch predictor for model {modelFname}.")
         if not constants.getTensorflowLoaded():
             # We haven't loaded Tensorflow yet.
             setMemoryGrowth()
@@ -848,7 +866,7 @@ class BatchPredictor:
         del numThreads
 
     def __enter__(self):
-        """Do nothing; context manager is a no-op for a non-threaded BatchPredictor."""
+        """Do nothing; context manager is a no-op for a non-threaded ``BatchPredictor``."""
 
     def __exit__(self, exceptionType, exceptionValue, exceptionTraceback):  # noqa: ANN001
         """Quit the context manager.
@@ -866,8 +884,10 @@ class BatchPredictor:
         """Reset the predictor.
 
         If you've left your predictor in some weird state, you can reset it
-        by calling clear(). This empties all the queues.
+        by calling ``clear()``. This empties all the queues.
         """
+        logUtils.info(f"Clearing batch predictor, purging {self._inWaiting} inputs "
+                      f"and {self._outWaiting} outputs.")
         self._inQueue.clear()
         self._outQueue.clear()
         self._inWaiting = 0
@@ -876,13 +896,13 @@ class BatchPredictor:
     def submitOHE(self, sequence: ONEHOT_AR_T, label: typing.Any) -> None:
         """Submit a one-hot-encoded sequence.
 
-        :param sequence: An (input-length x NUM_BASES) ndarray containing the
+        :param sequence: An ``(input-length x NUM_BASES)`` ndarray containing the
             one-hot encoded sequence to predict.
         :param label: Any object; it will be returned with the prediction.
         """
         self._inQueue.appendleft((sequence, label))
         self._inWaiting += 1
-        if self._inWaiting >= self._batchSize:
+        if self._inWaiting >= self._batchSize * 16:
             # We have a ton of sequences to run, so go ahead
             # and run a batch real quick.
             self.runBatch()
@@ -890,7 +910,7 @@ class BatchPredictor:
     def submitString(self, sequence: str, label: typing.Any) -> None:
         """Submit a given sequence for prediction.
 
-        :param sequence: A string of length input-length
+        :param sequence: A string of length ``input-length``
         :param label: Any object. Label will be returned to you with the
             prediction.
         """
@@ -900,8 +920,8 @@ class BatchPredictor:
     def runBatch(self, maxSamples: int | None = None) -> None:
         """Actually run the batch.
 
-        Normally, this will be called
-        by the submit functions, and it will also be called if you ask
+        Normally, this will be called by the submit functions,
+        and it will also be called if you ask
         for output and the output queue is empty (assuming there are
         sequences waiting in the input queue.)
 
@@ -969,7 +989,7 @@ class BatchPredictor:
     def outputReady(self) -> bool:
         """Is there any output ready for you?
 
-        If output is ready, then calling getOutput will give a result immediately.
+        If output is ready, then calling ``getOutput()`` will give a result immediately.
 
         :return: True if the batcher is sitting on results, and False otherwise.
         """
@@ -978,7 +998,7 @@ class BatchPredictor:
     def empty(self) -> bool:
         """Is the batcher totally idle?
 
-        If the batcher is not empty, then you can safely call getOutput, though
+        If the batcher is not empty, then you can safely call ``getOutput()``, though
         it may block if it needs to run a calculation.
 
         :return: True if there are no predictions at all in the queue.
@@ -992,17 +1012,17 @@ class BatchPredictor:
         the same order as they were submitted.
 
         :return: A two-tuple.
-        :rtype: tuple[list[LOGIT_AR_T, LOGIT_T], typing.Any]
+        :rtype: ``tuple[list[LOGIT_AR_T, LOGIT_T], typing.Any]``
 
-        * The first element will be a list of length numHeads*2, representing the
+        * The first element will be a list of length ``numHeads * 2``, representing the
           output from the model. Since the output of the model will always have
           a dimension representing the batch size, and this function only returns
           the result of running a single sequence, the dimension representing
           the batch size is removed. In other words, running the model on a
           single example would give a logits output of shape
-          (1 x output-length x num-tasks).
+          ``(1 x output-length x num-tasks)``.
           But this function will remove that, so you will get an array of shape
-          (output-length x numTasks)
+          ``(output-length x numTasks)``
           As with calling the model directly, the first numHeads elements are the
           logits arrays, and then come the logcounts for each head.
           You can pass the logits and logcounts values to
@@ -1074,7 +1094,7 @@ class ThreadedBatchPredictor:
     def __init__(self, modelFname: str, batchSize: int, start: bool = False,
                  numThreads: int = 1) -> None:
         """Build the batch predictor."""
-        logUtils.debug("Creating threaded batch predictor.")
+        logUtils.debug(f"Creating threaded batch predictor for model {modelFname}.")
         self._batchSize = batchSize
         self._modelFname = modelFname
         self._batchSize = batchSize
@@ -1119,13 +1139,14 @@ class ThreadedBatchPredictor:
             self._batchers = []
 
             for _ in range(self._numThreads):
-                nextInQueue = multiprocessing.Queue(10000)
-                nextOutQueue = multiprocessing.Queue(10000)
+                nextInQueue = CrashQueue(maxsize=10000)
+                nextOutQueue = CrashQueue(maxsize=10000)
                 self._inQueues.append(nextInQueue)
                 self._outQueues.append(nextOutQueue)
                 nextBatcher = multiprocessing.Process(
                     target=_batcherThread,
-                    args=(self._modelFname, self._batchSize, nextInQueue, nextOutQueue),
+                    args=(self._modelFname, self._batchSize, nextInQueue,
+                          nextOutQueue),
                     daemon=True)
                 nextBatcher.start()
                 self._batchers.append(nextBatcher)
@@ -1152,11 +1173,11 @@ class ThreadedBatchPredictor:
             for i in range(self._numThreads):
                 self._inQueues[i].put("shutdown")
                 self._inQueues[i].close()
-                self._batchers[i].join(QUEUE_TIMEOUT)  # Wait one second.
+                self._batchers[i].join(5)  # Wait 5 seconds.
                 if self._batchers[i].exitcode is None:
                     # The process failed to die. Kill it more forcefully.
                     self._batchers[i].terminate()
-                self._batchers[i].join(QUEUE_TIMEOUT)  # Wait one second.
+                self._batchers[i].join(5)  # Wait 5 seconds.
                 self._batchers[i].close()
                 self._outQueues[i].close()
             del self._inQueues
@@ -1173,6 +1194,7 @@ class ThreadedBatchPredictor:
 
         This also starts the batcher.
         """
+        logUtils.info(f"Clearing threaded batcher. Canceling {self._inFlight} predictions.")
         if self.running:
             self.stop()
         self.start()
@@ -1180,7 +1202,7 @@ class ThreadedBatchPredictor:
     def submitOHE(self, sequence: ONEHOT_AR_T, label: typing.Any) -> None:
         """Submit a one-hot-encoded sequence.
 
-        :param sequence: An (input-length x NUM_BASES) ndarray containing the
+        :param sequence: An ``(input-length x NUM_BASES)`` ndarray containing the
             one-hot encoded sequence to predict.
         :param label: Any (picklable) object; it will be returned with the prediction.
         """
@@ -1189,7 +1211,7 @@ class ThreadedBatchPredictor:
             self.start()
         q = self._inQueues[self._inQueueIdx]
         query = (sequence, label)
-        q.put(query, True, QUEUE_TIMEOUT)
+        q.put(query)
         self._outQueueOrder.appendleft(self._inQueueIdx)
         # Assign work in a round-robin fashion.
         self._inQueueIdx = (self._inQueueIdx + 1) % self._numThreads
@@ -1198,7 +1220,7 @@ class ThreadedBatchPredictor:
     def submitString(self, sequence: str, label: typing.Any) -> None:
         """Submit a given sequence for prediction.
 
-        :param sequence: A string of length input-length
+        :param sequence: A string of length ``input-length``
         :param label: Any (picklable) object. Label will be returned to you with the
             prediction.
         """
@@ -1208,9 +1230,9 @@ class ThreadedBatchPredictor:
     def outputReady(self) -> bool:
         """Is there any output ready for you?
 
-        If output is ready, then calling getOutput will give a result immediately.
+        If output is ready, then calling ``getOutput()`` will give a result immediately.
 
-        :return: True if the batcher is sitting on results, and False otherwise.
+        :return: ``True`` if the batcher is sitting on results, and ``False`` otherwise.
         """
         if self._inFlight:
             outIdx = self._outQueueOrder[-1]
@@ -1220,10 +1242,10 @@ class ThreadedBatchPredictor:
     def empty(self) -> bool:
         """Is the batcher totally idle?
 
-        If the batcher is not empty, then you can call getOutput, though
+        If the batcher is not empty, then you can call ``getOutput()``, though
         it may block if it needs to run a calculation.
 
-        :return: True if there are no predictions at all in the queue.
+        :return: ``True`` if there are no predictions at all in the queue.
         """
         return self._inFlight == 0
 
@@ -1231,7 +1253,7 @@ class ThreadedBatchPredictor:
         """Get a single output.
 
         :return: The model's predictions.
-        :rtype: tuple[list[LOGIT_AR_T, LOGCOUNT_T], typing.Any]
+        :rtype: ``tuple[list[LOGIT_AR_T, LOGCOUNT_T], typing.Any]``
 
         Same semantics and blocking behavior as
         :py:meth:`BatchPredictor.getOutput<bpreveal.utils.BatchPredictor.getOutput>`.
@@ -1243,14 +1265,14 @@ class ThreadedBatchPredictor:
                 self._inQueues[nextQueueIdx].put("finishBatch")
             else:
                 raise queue.Empty("The batcher is empty; cannot getOutput().")
-        ret = self._outQueues[nextQueueIdx].get(True, QUEUE_TIMEOUT)
+        ret = self._outQueues[nextQueueIdx].get()
         self._inFlight -= 1
         return ret
 
 
-def _batcherThread(modelFname: str, batchSize: int, inQueue: multiprocessing.Queue,
-                   outQueue: multiprocessing.Queue) -> None:
-    """Run batches from the ThreadedBatchPredictor in this separate thread.
+def _batcherThread(modelFname: str, batchSize: int, inQueue: CrashQueue,
+                   outQueue: CrashQueue) -> None:
+    """Run batches from the ``ThreadedBatchPredictor`` in this separate thread.
 
     .. note::
         Sets :py:data:`bpreveal.internal.constants.GLOBAL_TENSORFLOW_LOADED`.
@@ -1271,7 +1293,7 @@ def _batcherThread(modelFname: str, batchSize: int, inQueue: multiprocessing.Que
         # No timeout because this batcher could be waiting for a very long time to get
         # inputs.
         try:
-            inVal = inQueue.get(True, 0.1)
+            inVal = inQueue.get(timeout=0.1)
         except queue.Empty:
             numWaits += 1
             # There was no input. Are we sitting on predictions that we could go ahead
@@ -1284,7 +1306,7 @@ def _batcherThread(modelFname: str, batchSize: int, inQueue: multiprocessing.Que
                 # Nope, go ahead and give the batcher a spin while we wait.
                 batcher.runBatch(maxSamples=batchSize)
                 while not outQueue.full() and batcher.outputReady():
-                    outQueue.put(batcher.getOutput(), True, QUEUE_TIMEOUT)
+                    outQueue.put(batcher.getOutput())
                     predsInFlight -= 1
             continue
         numWaits = 0
@@ -1298,12 +1320,12 @@ def _batcherThread(modelFname: str, batchSize: int, inQueue: multiprocessing.Que
                 # If there's an answer and the out queue can handle it, go ahead
                 # and send it.
                 while not outQueue.full() and batcher.outputReady():
-                    outQueue.put(batcher.getOutput(), True, QUEUE_TIMEOUT)
+                    outQueue.put(batcher.getOutput())
                     predsInFlight -= 1
             case "finishBatch":
                 while predsInFlight:
                     outPred = batcher.getOutput()
-                    outQueue.put(outPred, True, QUEUE_TIMEOUT)
+                    outQueue.put(outPred)
                     predsInFlight -= 1
             case "shutdown":
                 # End the thread.

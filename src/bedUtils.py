@@ -3,7 +3,6 @@ from typing import Literal, Any
 import multiprocessing
 from collections import deque
 import os
-from bpreveal.internal.constants import QUEUE_TIMEOUT
 import pybedtools
 import pysam
 import numpy as np
@@ -11,6 +10,7 @@ import pyBigWig
 from bpreveal import logUtils
 from bpreveal.logUtils import wrapTqdm
 from bpreveal.internal import constants
+from bpreveal.internal.crashQueue import CrashQueue
 
 
 def makeWhitelistSegments(genome: pysam.FastaFile,
@@ -230,25 +230,23 @@ def resize(interval: pybedtools.Interval, mode: str, width: int,
 
 
 def _metapeakThread(bwFname: str,
-                    inQueue: multiprocessing.Queue,
-                    outQueue: multiprocessing.Queue) -> None:
+                    inQueue: CrashQueue,
+                    outQueue: CrashQueue) -> None:
     bigwigFp = pyBigWig.open(bwFname)
     totalProfile = None
     numQueries = 0
-    try:
-        while (query := inQueue.get(timeout=QUEUE_TIMEOUT)) is not None:
-            numQueries += 1
-            chrom, start, end, strand = query
-            profile = np.nan_to_num(bigwigFp.values(chrom, start, end))
-            if strand == "-":
-                profile = np.flip(profile)
-            if totalProfile is None:
-                totalProfile = profile
-            else:
-                totalProfile = totalProfile + profile
-        outQueue.put((totalProfile, numQueries), timeout=QUEUE_TIMEOUT)
-    finally:
-        bigwigFp.close()
+    while (query := inQueue.get()) is not None:
+        numQueries += 1
+        chrom, start, end, strand = query
+        profile = np.nan_to_num(bigwigFp.values(chrom, start, end))
+        if strand == "-":
+            profile = np.flip(profile)
+        if totalProfile is None:
+            totalProfile = profile
+        else:
+            totalProfile = totalProfile + profile
+        outQueue.put((totalProfile, numQueries))
+    bigwigFp.close()
 
 
 def metapeak(intervals: pybedtools.BedTool,
@@ -290,8 +288,8 @@ def metapeak(intervals: pybedtools.BedTool,
     if numThreads is None:
         numThreads = len(os.sched_getaffinity(0))
     pids = []
-    inQueue = multiprocessing.Queue()
-    outQueue = multiprocessing.Queue()
+    inQueue = CrashQueue()
+    outQueue = CrashQueue()
     for i in range(numThreads):
         pids.append(multiprocessing.Process(
             target=_metapeakThread,
@@ -299,15 +297,14 @@ def metapeak(intervals: pybedtools.BedTool,
             daemon=True))
         pids[i].start()
     for interval in intervalList:
-        inQueue.put((interval.chrom, interval.start, interval.end, interval.strand),
-                    timeout=QUEUE_TIMEOUT)
+        inQueue.put((interval.chrom, interval.start, interval.end, interval.strand))
     for _ in range(numThreads):
-        inQueue.put(None, timeout=QUEUE_TIMEOUT)  # We're done, send the termination signal.
+        inQueue.put(None)  # We're done, send the termination signal.
     rets = []
     for _ in range(numThreads):
-        rets.append(outQueue.get(timeout=QUEUE_TIMEOUT))
+        rets.append(outQueue.get())
     for i in range(numThreads):
-        pids[i].join(timeout=QUEUE_TIMEOUT)
+        pids[i].join()
     totalProfile = rets[0][0]
     totalCounts = rets[0][1]
     for p, c in rets[1:]:
@@ -374,8 +371,8 @@ class ParallelCounter:
     def __init__(self, bigwigNames: list[str], numThreads: int):
         self.bigwigNames = bigwigNames
         self.numThreads = numThreads
-        self.inQueue = multiprocessing.Queue()
-        self.outQueue = multiprocessing.Queue()
+        self.inQueue = CrashQueue()
+        self.outQueue = CrashQueue()
         self.inFlight = 0
         self.outDeque = deque()
         self.numInDeque = 0
@@ -383,7 +380,8 @@ class ParallelCounter:
             target=_counterThread,
             args=(bigwigNames, self.inQueue, self.outQueue))
             for _ in range(numThreads)]
-        [x.start() for x in self.threads]  # pylint: disable=expression-not-assigned
+        for t in self.threads:
+            t.start()
 
     def addQuery(self, query: tuple[str, int, int], idx: Any) -> None:
         """Add a region (chrom, start, end) to the task list.
@@ -391,10 +389,10 @@ class ParallelCounter:
         :param query: A tuple of (chromosome, start, end) giving the region to look at.
         :param idx: An index that will be returned with the results.
         """
-        self.inQueue.put(query + (idx,), timeout=constants.QUEUE_TIMEOUT)
+        self.inQueue.put(query + (idx,))
         self.inFlight += 1
         while not self.outQueue.empty():
-            self.outDeque.appendleft(self.outQueue.get(timeout=constants.QUEUE_TIMEOUT))
+            self.outDeque.appendleft(self.outQueue.get())
             self.numInDeque += 1
             self.inFlight -= 1
 
@@ -402,7 +400,8 @@ class ParallelCounter:
         """Wrap up the show - close the child threads."""
         for _ in range(self.numThreads):
             self.inQueue.put(None)
-        [x.join() for x in self.threads]  # pylint: disable=expression-not-assigned
+        for t in self.threads:
+            t.join()
 
     def getResult(self) -> tuple[float, int]:
         """Get the next result.
@@ -414,15 +413,15 @@ class ParallelCounter:
         values.
         """
         if self.inFlight and self.numInDeque == 0:
-            self.outDeque.appendleft(self.outQueue.get(timeout=constants.QUEUE_TIMEOUT))
+            self.outDeque.appendleft(self.outQueue.get())
             self.numInDeque += 1
             self.inFlight -= 1
         self.numInDeque -= 1
         return self.outDeque.pop()
 
 
-def _counterThread(bigwigFnames: list[str], inQueue: multiprocessing.Queue,
-                   outQueue: multiprocessing.Queue) -> None:
+def _counterThread(bigwigFnames: list[str], inQueue: CrashQueue,
+                   outQueue: CrashQueue) -> None:
     """Thread to sum up regions of the bigwigs.
 
     :param bigwigFnames: A list of file names to open.
@@ -457,7 +456,7 @@ def _counterThread(bigwigFnames: list[str], inQueue: multiprocessing.Queue,
     outDeque = deque()
     inDeque = 0
     while True:
-        query = inQueue.get(timeout=constants.QUEUE_TIMEOUT)
+        query = inQueue.get()
         match query:
             case (chrom, start, end, idx):
                 r = getCounts(pybedtools.Interval(chrom, start, end), bwFiles)
@@ -469,7 +468,8 @@ def _counterThread(bigwigFnames: list[str], inQueue: multiprocessing.Queue,
             case None:
                 break
     while inDeque:
-        outQueue.put(outDeque[-1], timeout=constants.QUEUE_TIMEOUT)
+        outQueue.put(outDeque[-1])
         inDeque -= 1
-    [x.close() for x in bwFiles]  # pylint: disable=expression-not-assigned
+    for bwFp in bwFiles:
+        bwFp.close()
 # Copyright 2022, 2023, 2024 Charles McAnany. This file is part of BPReveal. BPReveal is free software: You can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 2 of the License, or (at your option) any later version. BPReveal is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with BPReveal. If not, see <https://www.gnu.org/licenses/>.  # noqa

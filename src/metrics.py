@@ -105,7 +105,7 @@ API
 import argparse
 import json
 import typing
-from multiprocessing import Process, Queue
+from multiprocessing import Process
 import sys
 from numpy._typing import NDArray
 import pyBigWig
@@ -113,7 +113,7 @@ import numpy as np
 import scipy.stats
 import scipy.spatial.distance
 from bpreveal import logUtils
-from bpreveal.internal.constants import QUEUE_TIMEOUT
+from bpreveal.internal.crashQueue import CrashQueue
 
 
 class Region:
@@ -138,7 +138,7 @@ class MetricsCalculator:
     """
 
     def __init__(self, referenceBwFname: str, predictedBwFname: str, applyAbs: bool,
-                 inQueue: Queue, outQueue: Queue, tid: int):
+                 inQueue: CrashQueue, outQueue: CrashQueue, tid: int):
         self.referenceBw = pyBigWig.open(referenceBwFname, "r")
         self.predictedBw = pyBigWig.open(predictedBwFname, "r")
         self.applyAbs = applyAbs
@@ -186,12 +186,12 @@ class MetricsCalculator:
             referenceCounts = predictedCounts = np.nan
 
         ret = (regionID, mnllVal, jsd, pearsonr, spearmanr, referenceCounts, predictedCounts)
-        self.outQueue.put(ret, timeout=QUEUE_TIMEOUT)
+        self.outQueue.put(ret)
 
     def run(self) -> None:
         """Watch the input queue and run queries until you get the stop signal."""
         while True:
-            match self.inQueue.get(timeout=QUEUE_TIMEOUT):
+            match self.inQueue.get():
                 case None:
                     self.finish()
                     return
@@ -205,7 +205,7 @@ class MetricsCalculator:
 
 
 def calculatorThread(referenceBwFname: str, predictedBwFname: str, applyAbs: bool,
-                     inQueue: Queue, outQueue: Queue, tid: int) -> None:
+                     inQueue: CrashQueue, outQueue: CrashQueue, tid: int) -> None:
     """Just spawns a MetricsCalculator and runs it.
 
     :param referenceBwFname: The file name of the reference bigwig.
@@ -220,8 +220,8 @@ def calculatorThread(referenceBwFname: str, predictedBwFname: str, applyAbs: boo
     calc.run()
 
 
-def regionGenThread(regionsFname: str, regionQueue: Queue,
-                    numThreads: int, numberQueue: Queue) -> None:
+def regionGenThread(regionsFname: str, regionQueue: CrashQueue,
+                    numThreads: int, numberQueue: CrashQueue) -> None:
     """A thread to generate regions and stuff them in the regionQueue.
 
     :param regionsFname: The bed file to read in.
@@ -240,11 +240,11 @@ def regionGenThread(regionsFname: str, regionQueue: Queue,
     with open(regionsFname, "r") as fp:
         regions = [Region(x) for x in fp]
     logUtils.info(f"Number of regions: {len(regions)}")
-    numberQueue.put(len(regions), timeout=QUEUE_TIMEOUT)
+    numberQueue.put(len(regions))
     for i, r in enumerate(regions):
-        regionQueue.put((r, r, i), timeout=QUEUE_TIMEOUT)
+        regionQueue.put((r, r, i))
     for _ in range(numThreads):
-        regionQueue.put(None, timeout=QUEUE_TIMEOUT)
+        regionQueue.put(None)
     logUtils.debug("Generator done.")
 
 
@@ -279,7 +279,7 @@ def percentileStats(name: str, vector: np.ndarray, jsonDict: dict,
         outputFp.write(f"{name:10s}{quantileStr}\t{vector.shape[0]:d}\n")
 
 
-def receiveThread(numRegions: int, outputQueue: Queue,
+def receiveThread(numRegions: int, outputQueue: CrashQueue,
                   skipZeroes: bool, jsonOutput: bool, jsonDict: dict,
                   outputFile: str | None) -> None:
     """Listen to the output from the calculator threads and process it.
@@ -307,7 +307,7 @@ def receiveThread(numRegions: int, outputQueue: Queue,
     predictedCounts = np.zeros((numRegions,))
     pbar = logUtils.wrapTqdm(range(numRegions), logUtils.INFO)
     for _ in pbar:
-        ret = outputQueue.get(timeout=QUEUE_TIMEOUT)
+        ret = outputQueue.get()
         (regionID, mnllVal, jsd, pearsonr, spearmanr, referenceCount, predictedCount) = ret
         mnlls[regionID] = mnllVal
         jsds[regionID] = jsd
@@ -372,9 +372,9 @@ def runMetrics(reference: str, predicted: str, regions: str, threads: int, apply
 
     Doesn't return anything, but will print to stdout.
     """
-    regionQueue = Queue()
-    resultQueue = Queue()
-    numberQueue = Queue()
+    regionQueue = CrashQueue()
+    resultQueue = CrashQueue()
+    numberQueue = CrashQueue()
     if not jsonOutput:
         print(f"reference {reference} predicted {predicted} regions {regions}")  # noqa: T201
     regionThread = Process(target=regionGenThread,
@@ -392,7 +392,7 @@ def runMetrics(reference: str, predicted: str, regions: str, threads: int, apply
     # Since the number of regions is not known before starting up the regions thread, I have to
     # start the regions thread and then get a message telling me how many regions there are.
     # Clunky, but avoids re-reading the bed file.
-    numRegions = numberQueue.get(timeout=QUEUE_TIMEOUT)
+    numRegions = numberQueue.get()
 
     writerThread = Process(target=receiveThread,
         args=(numRegions, resultQueue, skipZeroes, jsonOutput,
