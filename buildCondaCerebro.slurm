@@ -30,7 +30,7 @@ export BPREVEAL_DIR=/home/gq2899/bin/bpreveal
 # -p if you're specifying a path, -n if you're specifying a name.
 # CHANGE the environment name to your own preference.
 export ENV_FLAG=-n
-export ENV_NAME=bpreveal_404
+export ENV_NAME=bpreveal_502
 
 # CHANGE this to conda if you don't have mamba installed.
 # (I recommend using mamba; it's way faster.)

@@ -1,0 +1,38 @@
+polars
+plotnine
+urllib
+pyarrow
+fastexcel
+pyjaspar
+r-base
+r-essentials
+r-tidyverse
+r-ggseqlogo
+r-lazyeval
+r-patchwork
+rpy2
+pyranges
+
+mamba install -c bioconda \
+    bioconductor-rtracklayer \
+    bioconductor-genomicranges \
+    bioconductor-biostrings \
+    bioconductor-plyranges \
+    bioconductor-rsamtools \
+    bioconductor-bsgenome.mmusculus.ucsc.mm10 \
+    bioconductor-txdb.mmusculus.ucsc.mm10.knowngene \
+    bioconductor-org.mm.eg.db
+
+mamba install -c conda-forge \
+    r-magrittr \
+    r-ggplot2 \
+    r-reshape2 \
+    r-dplyr \
+    r-data.table \
+    r-patchwork \
+    r-readr \
+    r-testit \
+    r-readxl \
+    r-ggseqlogo
+
+mamba install -c conda-forge rpy2
