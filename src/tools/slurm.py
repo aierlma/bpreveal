@@ -51,7 +51,7 @@ def configSlurmLocal(shellRcFiles: list[str] | str, envName: str, workingDirecto
         it names one and only .shrc file that should be executed.
     :param envName: The name of the conda environment to activate.
     :param workingDirectory: The directory where your code is based.
-        Shell scripts will be placed in <workingDirectory>/slurm/<jobName>.zsh,
+        Shell scripts will be placed in <workingDirectory>/slurm/<jobName>.bash,
         and logs will be in <workingDirectory>/logs/<jobName>.log.
     :param cpus: How many total CPUs are available on this machine?
     :param memory: How much memory (in GiB) is available for these jobs, in total?
@@ -73,7 +73,7 @@ def configSlurmLocal(shellRcFiles: list[str] | str, envName: str, workingDirecto
             "cpus": cpus, "memory": memory}
 
 
-LOCAL_HEADER = """#!/usr/bin/env zsh
+LOCAL_HEADER = """#!/usr/bin/env bash
 
 {sourcerc:s}
 
@@ -83,7 +83,7 @@ export PATH=$PATH:/n/apps/CentOS7/bin
 {condastring:s}
 """
 
-SLURM_HEADER_NOGPU = """#!/usr/bin/env zsh
+SLURM_HEADER_NOGPU = """#!/usr/bin/env bash
 #SBATCH --job-name {jobName:s}
 #SBATCH --ntasks={ntasks:d}
 #SBATCH --nodes=1
@@ -172,7 +172,7 @@ def jobsLocal(config: dict, tasks: list[str], jobName: str, ntasks: int | None =
     else:
         for task in tasks:
             cmd += f"{task}\n"
-    scriptFname = config["workDir"] + f"/slurm/{jobName}.zsh"
+    scriptFname = config["workDir"] + f"/slurm/{jobName}.sh"
     with open(scriptFname, "w") as fp:
         fp.write(cmd)
     # Chmod the file to rwxr--r--.
@@ -180,7 +180,7 @@ def jobsLocal(config: dict, tasks: list[str], jobName: str, ntasks: int | None =
     return scriptFname
 
 
-SLURM_HEADER_GPU = """#!/usr/bin/env zsh
+SLURM_HEADER_GPU = """#!/usr/bin/env bash
 #SBATCH --job-name {jobName:s}
 #SBATCH --ntasks={ntasks:d}
 #SBATCH --nodes=1
@@ -282,13 +282,13 @@ def writeDependencyScript(config: dict, jobspecs: list[list[str | list[str]]],
     :param cancelScript: Name of a script to write that contains commands to
         cancel all of the jobs in this array (including extension)
     """
-    outFname = config["workDir"] + f"/slurm/{wholeJobName}.zsh"
+    outFname = config["workDir"] + f"/slurm/{wholeJobName}.sh"
     jobOrder, jobToDepNumber = _buildJobTree(jobspecs)
 
     with open(outFname, "w") as fp:
-        fp.write("#!/usr/bin/env zsh\n")
+        fp.write("#!/usr/bin/env bash\n")
         if cancelScript is not None:
-            fp.write(f"echo '#!/usr/bin/env zsh' > {cancelScript}\n")
+            fp.write(f"echo '#!/usr/bin/env bash' > {cancelScript}\n")
         i = 0
         for jobSpec in jobOrder:
             job, deps = jobSpec

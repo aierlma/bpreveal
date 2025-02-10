@@ -1,0 +1,19 @@
+r-base r-essentials
+
+conda install -c bioconda \
+    bioconductor-rtracklayer \
+    bioconductor-genomicranges \
+    bioconductor-biostrings \
+    bioconductor-plyranges \
+    bioconductor-rsamtools \
+    bioconductor-bsgenome.mmusculus.ucsc.mm10 \
+    bioconductor-txdb.mmusculus.ucsc.mm10.knowngene \
+    bioconductor-org.mm.eg.db
+
+conda install -c conda-forge \
+r-patchwork \
+r-testit \
+r-ggseqlogo \
+
+conda install -c conda-forge r-pander
+conda install -c conda-forge r-viridis

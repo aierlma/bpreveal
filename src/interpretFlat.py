@@ -158,6 +158,7 @@ import bpreveal.schema
 from bpreveal import interpretUtils
 from bpreveal import logUtils
 import bpreveal.internal.disableTensorflowLogging  # pylint: disable=unused-import # noqa
+from bpreveal.utils import setMemoryGrowth
 from bpreveal.internal import predictUtils
 from bpreveal.internal import interpreter
 
@@ -168,6 +169,7 @@ def main(config: dict) -> None:
     :param config: A JSON object matching the interpretFlat specification.
     """
     logUtils.setVerbosity(config["verbosity"])
+    # setMemoryGrowth()                 # set memory growth to true, try to avoid OOM error
     genomeFname = None
     kmerSize = 1
     if "kmer-size" in config:
@@ -201,7 +203,7 @@ def main(config: dict) -> None:
     batcher = interpretUtils.FlatRunner(
         modelFname=config["model-file"], headID=config["head-id"],
         numHeads=config["heads"], taskIDs=config["profile-task-ids"],
-        batchSize=10, generator=generator, profileSaver=profileWriter,
+        batchSize=5, generator=generator, profileSaver=profileWriter,    # change batch size to 5 to see if it helps(orignal 10)
         countsSaver=countsWriter, numShuffles=config["num-shuffles"],
         kmerSize=kmerSize)
     batcher.run()
