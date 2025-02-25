@@ -20,5 +20,6 @@ bioconductor-rtracklayer
 pathos
 deeptools
 pytables
+ipywidgets
 
 mamba install -c conda-forge rpy2
