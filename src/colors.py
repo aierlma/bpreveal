@@ -17,7 +17,8 @@ import matplotlib.colors as mplcolors
 import matplotlib.font_manager
 import matplotlib.pyplot as plt
 from bpreveal import logUtils
-from bpreveal.internal.constants import RGB_T, DNA_COLOR_SPEC_T, COLOR_SPEC_T
+from bpreveal.internal.constants import RGB_T, DNA_COLOR_SPEC_T, COLOR_SPEC_T, \
+    setDefaultFontFamily
 
 
 def _toFractions(colorList: tuple[tuple[int, int, int], ...]) -> tuple[RGB_T, ...]:
@@ -140,6 +141,43 @@ pisaNoClip = mplcolors.ListedColormap(_oldPisaCmap(np.linspace(0, 1, 256)))
 """
 
 
+def getGraphCmap(minValue: float, colorSpan: float,
+                 baseCmap: mplcolors.Colormap) -> mplcolors.Colormap:
+    """Remove the central portion of a color map for PISA graphs.
+
+    :param minValue: The value (in logit space) below which no lines will
+        be drawn in the PISA graph. This is the region of the returned color
+        map that will be white.
+    :param colorSpan: The total range of the color map. Lines with higher PISA
+        scores than colorSpan will be clipped to the extreme values of the color
+        map.
+    :param baseCmap: The colormap to modify. This will be either ``pisaClip`` or
+        ``pisaNoClip``, or you may provide your own Colormap object.
+    :return: A new color map that can be used to color lines in a PISA
+        graph.
+    """
+    sampledCmap = baseCmap.resampled(256)
+    colorList = sampledCmap(np.linspace(0, 1, 256))
+    # The range for a color map must be from 0 to 1
+    # but the minValue and color span parameters will be centered
+    # at zero, not 1/2.
+    # If the resampled color map is:
+    #         a b c d e f g h i j k l m o p q r s t u v w x y z
+    #         |                 |     |     |                 |
+    #     -colorSpan       -minValue  0  +minValue         +colorSpan
+    #         0                      0.5                      1
+    # where the top line of labels is in the zero-centered space we think in
+    # then the bottom line is the points on the 0 to 1 cmap object.
+
+    lowerBound = (colorSpan - minValue) / (2 * colorSpan)
+    upperBound = (colorSpan + minValue) / (2 * colorSpan)
+    white = np.array([1, 1, 1, 1])
+    sliceStart = int(lowerBound * 256)
+    sliceEnd = int(upperBound * 256)
+    colorList[sliceStart:sliceEnd] = white
+    return mplcolors.ListedColormap(colorList)
+
+
 def parseSpec(  # pylint: disable=too-many-return-statements
         colorSpec: COLOR_SPEC_T | str) -> RGB_T:
     """Given a color-spec (See the BNF), convert it into an rgb or rgba tuple.
@@ -196,32 +234,54 @@ def parseSpec(  # pylint: disable=too-many-return-statements
             raise ValueError(f"Invalid color spec: {colorSpec}")
 
 
-def loadFonts() -> None:
-    """Configures the matplotlib default fonts to be in the Libertinus family.
+def loadFonts(serif: bool = True) -> None:
+    """Configure the matplotlib default fonts to be in the Libertinus family.
 
-    This places Libertinus fonts at the top of the order for serif and sans-serif
-    fontfamily, but does not overwrite the monospace family.
+    :param serif: Should a serif font be used? The default is True, and this will use the
+        Libertinus font family. If False, then instead the Fira Sans font family will be
+        used.
+
+    This places the given font (Libertinus or Fira Sans) at the top of the
+    order for serif and sans-serif fontfamily, but does not overwrite the monospace family.
+    It also sets the pdf backend to save text boxes rather than individual letters so that
+    text can be easily edited later.
     """
     try:
         cwd = pathlib.Path(__file__).parent.parent.parent.resolve()
-        fontdir = str(cwd / "doc" / "fonts" / "Libertinus-7.040" / "static/") + "/"
-        fontFiles = matplotlib.font_manager.findSystemFonts(fontpaths=[fontdir])
+        fontdirLibertinus = str(cwd / "doc" / "fonts" / "Libertinus-7.040" / "static/") + "/"
+        fontdirSans = str(cwd / "doc" / "fonts" / "Fira_Sans/") + "/"
+        fontFiles = matplotlib.font_manager.findSystemFonts(
+            fontpaths=[fontdirLibertinus, fontdirSans])
         for ff in fontFiles:  # pylint: disable=not-an-iterable
             try:
                 matplotlib.font_manager.fontManager.addfont(ff)
             except:  # pylint: disable=bare-except  # noqa
                 # Whatever happened, it's just going to alter fonts a bit.
                 pass
+
         oldFaces = plt.rcParams["font.serif"]
         plt.rcParams["font.serif"] = ["Libertinus Serif"] + oldFaces
         oldFaces = plt.rcParams["font.sans-serif"]
-        plt.rcParams["font.sans-serif"] = ["Libertinus Sans"] + oldFaces
-        plt.rcParams["font.family"] = "serif"
-        plt.rcParams["mathtext.fontset"] = "custom"
-        plt.rcParams["mathtext.rm"] = "Libertinus Serif"
-        plt.rcParams["mathtext.it"] = "Libertinus Serif:italic"
-        plt.rcParams["mathtext.bf"] = "Libertinus Serif:bold"
-        plt.rcParams["mathtext.cal"] = "Libertinus Serif:italic"
+        plt.rcParams["font.sans-serif"] = ["Fira Sans"] + oldFaces
+        if serif:
+            setDefaultFontFamily("serif")
+            plt.rcParams["font.family"] = "serif"
+            plt.rcParams["mathtext.fontset"] = "custom"
+            plt.rcParams["mathtext.rm"] = "Libertinus Serif"
+            plt.rcParams["mathtext.it"] = "Libertinus Serif:italic"
+            plt.rcParams["mathtext.bf"] = "Libertinus Serif:bold"
+            plt.rcParams["mathtext.cal"] = "Libertinus Serif:italic"
+        else:
+            setDefaultFontFamily("sans-serif")
+            plt.rcParams["font.family"] = "sans-serif"
+            plt.rcParams["mathtext.fontset"] = "custom"
+            plt.rcParams["mathtext.rm"] = "Fira Sans"
+            plt.rcParams["mathtext.it"] = "Fira Sans:italic"
+            plt.rcParams["mathtext.bf"] = "Fira Sans:bold"
+            plt.rcParams["mathtext.cal"] = "Fira Sans:italic"
+        # Set the pdf output to use text boxes, rather than drawing each character
+        # as a shape on its own.
+        plt.rcParams["pdf.fonttype"] = 42
         logUtils.debug("Configured matplotlib default fonts.")
     except Exception as e:  # pylint: disable=broad-exception-caught
         # If it didn't work, that's okay. User will still get good enough fonts.

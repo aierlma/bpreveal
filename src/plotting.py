@@ -34,8 +34,8 @@ to make PISA plots.
 
 ``color-map``
     Either ``"clip"``, ``"noclip"``, or a ``matplotlib.colors.Colormap``.
-    ``clip`` maps to :py:data:`pisaClip<bpreveal.colors.pisaClip`, and
-    ``noclip`` maps to :py:data:`pisaClip<bpreveal.colors.pisaNoClip`.
+    ``"clip"`` maps to :py:data:`pisaClip<bpreveal.colors.pisaClip`, and
+    ``"noclip"`` maps to :py:data:`pisaClip<bpreveal.colors.pisaNoClip`.
     Default: ``"clip"``.
 
 ``rasterize``
@@ -208,6 +208,7 @@ Specific parameters
     I recommend keeping this at about the 95th percentile
     of your PISA data, as otherwise an absolutely enormous number of
     splines will be drawn.
+    The color bar will be drawn as white within this range.
 
 ``use-annotation-colors``
     Only applicable to PISA graphs.
@@ -351,8 +352,8 @@ def plotPisaGraph(config: dict, fig: matplotlib.figure.Figure, validate: bool = 
     colorBlocks = []
     if cfg["use-annotation-colors"]:
         for annot in cfg["annotations"]["custom"]:
-            colorBlocks.append((annot["start"] - genomeStart,
-                                annot["end"] - genomeStart,
+            colorBlocks.append((annot["start"],
+                                annot["end"],
                                 annot["color"]))
     logUtils.debug("Axes set. Drawing graph.")
     Δ = coords["output-slice-width"] - coords["input-slice-width"]
@@ -516,7 +517,7 @@ def plotPisa(config: dict, fig: matplotlib.figure.Figure, validate: bool = True)
         schema.pisaPlot.validate(config)
     cfg = pu.buildConfig(config)
     del config  # Don't accidentally edit the old one.
-    logUtils.debug("Starting to draw PISA graph.")
+    logUtils.debug("Starting to draw PISA heatmap.")
     mini = cfg["figure"]["miniature"]
     axPisa, axSeq, axProfile, axCbar, axAnnot, axLegend = pu.getPisaAxes(
         fig=fig, left=cfg["figure"]["left"], bottom=cfg["figure"]["bottom"],
@@ -531,12 +532,16 @@ def plotPisa(config: dict, fig: matplotlib.figure.Figure, validate: bool = True)
     genomeStartX = coords["genome-window-start"] + sliceStartX
     genomeEndX = coords["genome-window-start"] + sliceEndX
     shearMat = np.copy(cfg["pisa"]["values"][sliceStartY:sliceEndY, sliceStartX:sliceEndX])
+    if shearMat.shape != (coords["output-slice-width"], coords["input-slice-width"]):
+        logUtils.error("Your slice goes off the edge of the PISA data. Reduce your "
+                       "slice widths. Plotting will continue, but axes will be incorrect. "
+                       "This will trigger an error in BPReveal 6.0.0.")
     colorBlocks = []
     for annot in cfg["annotations"]["custom"]:
         colorBlocks.append((annot["start"] - coords["genome-window-start"],
                             annot["end"] - coords["genome-window-start"],
                             annot["color"]))
-    logUtils.debug("Axes set. Drawing graph.")
+    logUtils.debug("Axes set. Drawing heatmap.")
     pisaCax = pu.addPisaPlot(shearMat=shearMat,
                              colorSpan=cfg["figure"]["color-span"],
                              axPisa=axPisa,
@@ -549,7 +554,7 @@ def plotPisa(config: dict, fig: matplotlib.figure.Figure, validate: bool = True)
                              cmap=cfg["pisa"]["color-map"],
                              rasterize=cfg["pisa"]["rasterize"])
     # Now set up the sequence/importance axis.
-    logUtils.debug("Main plot complete. Finishing PISA figure.")
+    logUtils.debug("Main plot complete. Adding horizontal profile plot.")
     pu.addHorizontalProfilePlot(
         values=cfg["importance"]["values"][sliceStartX:sliceEndX],
         colors=cfg["importance"]["color"][sliceStartX:sliceEndX],
@@ -562,12 +567,14 @@ def plotPisa(config: dict, fig: matplotlib.figure.Figure, validate: bool = True)
         labelXAxis=True, yAxisLabel="" if mini else "Contrib.\nscore",
         mini=mini)
 
+    logUtils.debug("Adding annotations.")
     usedNames = pu.addAnnotations(
         axAnnot=axAnnot, annotations=cfg["annotations"]["custom"],
         boxHeight=cfg["figure"]["annotation-height"],
         genomeStartX=genomeStartX, genomeEndX=genomeEndX,
         fontSize=cfg["figure"]["label-font-size"], mini=mini)
     # Now, add the profiles.
+    logUtils.debug("Adding vertical plot.")
     pu.addVerticalProfilePlot(
         profile=cfg["predictions"]["values"][sliceStartY:sliceEndY],
         axProfile=axProfile,
@@ -578,12 +585,15 @@ def plotPisa(config: dict, fig: matplotlib.figure.Figure, validate: bool = True)
         fontSizeAxLabel=cfg["figure"]["label-font-size"],
         mini=mini)
     if axLegend is not None:
+        logUtils.debug("Adding legend.")
         pu.addLegend(usedNames=usedNames, axLegend=axLegend,
                      fontSize=cfg["figure"]["label-font-size"])
+    logUtils.debug("Adding color bar.")
     pu.addCbar(pisaCax=pisaCax, axCbar=axCbar,
                fontSizeTicks=cfg["figure"]["tick-font-size"],
                fontSizeAxLabel=cfg["figure"]["label-font-size"],
                mini=mini)
+    logUtils.debug("Finished making PISA plot.")
     return {"axes": {"pisa": axPisa, "importance": axSeq, "predictions": axProfile,
                      "annotations": axAnnot, "colorbar": axCbar,
                      "legend": axLegend},
@@ -680,7 +690,7 @@ def plotModiscoPattern(pattern: motifUtils.Pattern,  # pylint: disable=too-many-
         tickPoses = np.linspace(0, len(pattern.seqlets), 11, endpoint=True)
         tickLabels = np.arange(0, 110, 10)[::-1]
         axCurStat.tick_params(axis="y", labelleft=False, labelright=rightTicks,
-                            left=False, right=rightTicks)
+                              left=False, right=rightTicks)
         axCurStat.set_yticks(tickPoses, tickLabels, fontsize=FONT_SIZE_TICKS,
                              fontfamily=FONT_FAMILY)
         axCurStat.grid()
@@ -860,15 +870,16 @@ def deleteTick(ax: AXES_T, which: Literal["x"] | Literal["y"] | Literal["both"],
         ax.set_yticklabels(newYLabels)
 
 
-def plotPisaWithFiles(pisaDats: str, cutMiddle: int, cutLengthX: int,
-                      cutLengthY: int, receptiveField: int, genomeWindowStart: int,
+def plotPisaWithFiles(pisaDats: str,  # pylint: disable=too-many-positional-arguments
+                      cutMiddle: int, cutLengthX: int, cutLengthY: int, receptiveField: int,
+                      genomeWindowStart: int,
                       genomeWindowChrom: str, genomeFastaFname: str, importanceBwFname: str,
                       motifScanBedFname: str, profileDats: str,
                       nameColors: dict[str, tuple[float, float, float]],
                       fig: matplotlib.figure.Figure, bbox: tuple[float, float, float, float],
                       colorSpan: float = 1.0, boxHeight: float = 0.1, fontsize: int = 5,
                       mini: bool = False) -> dict:
-    """Deprecated way to get the new config dict. Issues a warning if used."""
+    """Create a new-style config dict from the old argument sea. Issues a warning if used."""
     del fig
     del receptiveField
     logUtils.error("This function has been replaced with the new plotting config style. "

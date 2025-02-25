@@ -9,11 +9,12 @@ from bpreveal.internal.constants import H5_CHUNK_SIZE, IMPORTANCE_AR_T, ONEHOT_A
 
 
 class BatchedH5Reader:
-    """Reads in an hdf5 in chunks.
+    """Read in an hdf5 in chunks.
 
     :param batchSize: The number of elements that should be read in at once
     :param h5fp: The (open) hdf5 file object to read from.
     """
+
     curChunkStart: int
     curChunkEnd: int
 
@@ -73,8 +74,8 @@ def writeBigWig(inH5: h5py.File, outFname: str) -> None:  # pylint: disable=too-
     numRegions = inH5["coords_chrom"].shape[0]
     if isinstance(inH5["coords_chrom"][0], bytes):
         logUtils.error("You are using an old-style hdf5 file for importance scores. "
-            "Support for these files will be removed in BPReveal 6.0. "
-            "Instructions for updating: Re-calculate importance scores.")
+                       "Support for these files will be removed in BPReveal 7.0. "
+                       "Instructions for updating: Re-calculate importance scores.")
         coordsChrom = np.array(inH5["coords_chrom"].asstr())
     else:
         coordsChromIdxes = np.array(inH5["coords_chrom"])
@@ -148,7 +149,7 @@ def writeBigWig(inH5: h5py.File, outFname: str) -> None:  # pylint: disable=too-
 
 
 def getParser() -> argparse.ArgumentParser:
-    """Generate the parser
+    """Generate (but don't parse_args()) the parser.
 
     :return: An ``ArgumentParser``, ready to call ``parse_args()``
     """

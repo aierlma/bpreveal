@@ -32,7 +32,9 @@ def loadModel(modelFname: str):  # noqa: ANN201
         ``.keras`` for models trained with BPReveal 5.0.0 or later.
     :return: A Keras ``Model`` object.
 
-    The returned model does NOT support additional training, since it uses a dummy loss.
+    For pre-5.0.0 models, the returned model does NOT support additional training,
+    since it uses a dummy loss. New-style models remember their losses and so you can
+    continue to train them if you like.
 
     **Example:**
 
@@ -43,43 +45,43 @@ def loadModel(modelFname: str):  # noqa: ANN201
         preds = m.predict(myOneHotSequences)
 
     """
-    # TODO: Once Keras 4.3.2 is out, remove this lock.
-    with constants.MODEL_LOAD_LOCK:
-        logUtils.debug(f"Acquired lock to load model {modelFname}")
+    ret = None
+    # pylint: disable=import-outside-toplevel
+    import bpreveal.internal.disableTensorflowLogging  # pylint: disable=unused-import # noqa
+    from bpreveal.losses import multinomialNll, dummyMse
+    # pylint: enable=import-outside-toplevel
+    constants.setTensorflowLoaded()
+    if modelFname.endswith("model"):
+        try:
+            logUtils.info(
+                "You are attempting to a load a model with a '.model' extension. As of "
+                "BPReveal 5.0.0, models are given the extension '.keras' because keras "
+                "3.0 requires it. I will attempt to load the old-style model, but be "
+                "prepared for some janky behavior and possible bugs.")
+            import tf_keras  # pylint: disable=import-outside-toplevel
+            ret = tf_keras.models.load_model(
+                filepath=modelFname,
+                custom_objects={"multinomialNll": multinomialNll,
+                                "reweightableMse": dummyMse})
+            ret.useOldKeras = True
+            logUtils.debug(f"Loaded old-style model {modelFname}.")
+        except OSError:
+            logUtils.error(
+                f"You specified a model named {modelFname} but I couldn't find it. "
+                "Attempting to load a model with a '.keras' extension. If this "
+                "works, you should update your configuration file to use the new "
+                "extension.")
+            modelFname = modelFname[:-5] + "keras"
+    if ret is None:
         # pylint: disable=import-outside-toplevel
-        import bpreveal.internal.disableTensorflowLogging  # pylint: disable=unused-import # noqa
-        from bpreveal.losses import multinomialNll, dummyMse
+        from keras.models import load_model  # type: ignore
         # pylint: enable=import-outside-toplevel
-        constants.setTensorflowLoaded()
-        ret = None
-        if modelFname.endswith("model"):
-            try:
-                logUtils.info(
-                    "You are attempting to a load a model with a '.model' extension. As of "
-                    "BPReveal 5.0.0, models are given the extension '.keras' because keras "
-                    "3.0 requires it. I will attempt to load the old-style model, but be "
-                    "prepared for some janky behavior and possible bugs.")
-                import tf_keras  # pylint: disable=import-outside-toplevel
-                ret = tf_keras.models.load_model(filepath=modelFname,
-                            custom_objects={"multinomialNll": multinomialNll,
-                                            "reweightableMse": dummyMse})
-                ret.useOldKeras = True
-                logUtils.debug(f"Loaded old-style model {modelFname}.")
-            except OSError:
-                logUtils.error(
-                    f"You specified a model named {modelFname} but I couldn't find it. "
-                    "Attempting to load a model with a '.keras' extension. If this "
-                    "works, you should update your configuration file to use the new "
-                    "extension. This automatic renaming will be removed in BPReveal 7.0.0.")
-                modelFname = modelFname[:-5] + "keras"
-        if ret is None:
-            # pylint: disable=import-outside-toplevel
-            from keras.models import load_model  # type: ignore
-            # pylint: enable=import-outside-toplevel
-            ret = load_model(filepath=modelFname)
-            ret.useOldKeras = False
-            logUtils.debug(f"Loaded new-style model {modelFname}.")
-    logUtils.debug(f"Released lock to load model {modelFname}")
+        ret = load_model(
+            filepath=modelFname,
+            custom_objects={"multinomialNll": multinomialNll,
+                            "reweightableMse": dummyMse})
+        ret.useOldKeras = False
+        logUtils.debug(f"Loaded new-style model {modelFname}.")
     return ret
 
 
@@ -107,7 +109,7 @@ def setMemoryGrowth() -> None:
 
 
 def loadPisa(fname: str) -> IMPORTANCE_AR_T:
-    """Loads up a PISA file, shears it, and crops it to a standard array.
+    """Load up a PISA file, shear it, and crop it to a standard array.
 
     :param fname: The name of the hdf5-format file on disk, containing your PISA data.
     :return: An array of shape (num-samples, num-samples) containing the sheared PISA data.
@@ -189,6 +191,8 @@ def loadPisa(fname: str) -> IMPORTANCE_AR_T:
         offset = i
         shearMat[i, offset:offset + pisaVals.shape[1]] = pisaVals[i]
     shearMat = shearMat[:, receptiveField // 2:-receptiveField // 2]
+    logUtils.debug(f"The loaded PISA data have shape {pisaVals.shape} "
+                   "and the sheared matrix has shape {shearMat.shape}.")
     return shearMat
 
 
@@ -223,7 +227,6 @@ def limitMemoryUsage(fraction: float, offset: float) -> float:
     """
     assert 0.0 < fraction < 1.0, "Must give a memory fraction between 0 and 1."
     free = total = 0.0
-    # We didn't find memory in CUDA_VISIBLE_DEVICES.
     cmd = ["nvidia-smi", "--query-gpu=memory.total,memory.free", "--format=csv"]
     try:
         ret = sp.run(cmd, capture_output=True, check=True)
@@ -329,7 +332,7 @@ def blankChromosomeArrays(*, genomeFname: str | None = None,
 
     Exactly one of ``chromSizesFname``, ``genomeFname``, ``bwHeader``,
     ``chromSizes``, ``bw``, or ``fasta`` may be specified, all other
-    parameters must be None.
+    parameters must be ``None``.
 
     :param chromSizesFname: The name of a chrom.sizes file on disk.
     :param genomeFname: The name of a genome fasta file on disk.
@@ -390,7 +393,7 @@ def writeBigwig(bwFname: str, chromDict: dict[str, np.ndarray] | None = None,
         assert chromSizes is not None \
                and regionList is not None \
                and regionData is not None, \
-            "Must provide chromSizes, regionList, and regionData if chromDict is None."
+               "Must provide chromSizes, regionList, and regionData if chromDict is None."
         chromDict = blankChromosomeArrays(bwHeader=chromSizes)
         for i, r in enumerate(regionList):
             chrom, start, end = r
@@ -436,6 +439,15 @@ def oneHotEncode(sequence: str, allowN: bool = False, alphabet: str = "ACGT") ->
         T or t → [0, 0, 0, 1]
         Other  → [0, 0, 0, 0]
 
+    A convenient property of this mapping is that calculating a reverse-complement
+    sequence is trivial::
+
+        seq = "AAGAGGCT"
+        ohe = oneHotEncode(seq)
+        revcompOhe = np.flip(ohe)
+        revcompSeq = oneHotDecode(revcompOhe)
+        # revcompSeq is now "AGCCTCTT"
+
     **Example:**
 
     .. code-block:: python
@@ -478,7 +490,7 @@ def oneHotDecode(oneHotSequence: np.ndarray, alphabet: str = "ACGT") -> str:
     """Take a one-hot encoded sequence and turn it back into a string.
 
     :param oneHotSequence: An array of shape ``(n, NUM_BASES)``. It may have any type
-        that can be converted into a uint8.
+        that can be converted into a ``uint8``.
     :param alphabet: The order in which the bases are encoded.
 
     Given an array representing a one-hot encoded sequence, convert it back
@@ -563,12 +575,15 @@ def logitsToProfile(logitsAcrossSingleRegion: LOGIT_AR_T,
 # Easy functions
 
 
-def easyPredict(sequences: Iterable[str] | str, modelFname: str) -> \
+def easyPredict(sequences: Iterable[str] | str, modelFname: str, quiet: bool = False) -> \
         list[list[PRED_AR_T]] | list[PRED_AR_T]:
     """Make predictions with your model.
 
     :param sequences: The DNA sequence(s) that you want to predict on.
     :param modelFname: The name of the Keras model to use.
+    :param quiet: If True, all stderr spew from tensorflow is deleted. Set to True
+        for interactive use, but set to False if you're getting errors, since they'll
+        be deleted otherwise and make debugging a nightmare.
     :return: An array of profiles or a single profile, depending on ``sequences``
     :rtype: ``list[list[PRED_AR_T]]`` or ``list[PRED_AR_T]``
 
@@ -577,8 +592,8 @@ def easyPredict(sequences: Iterable[str] | str, modelFname: str) -> \
     GPU after it's done so other programs and stuff can use it.
     If ``sequences`` is a single string containing a sequence to predict
     on, that's okay, it will be treated as a length-one list of sequences
-    to predict. The ``sequences`` string should be as long as the input length of
-    your model.
+    to predict. The ``sequences`` string should be at least as long as
+    the input length of your model.
 
     If you passed in an iterable of strings (like a list of strings),
     the shape of the returned profiles will be
@@ -589,6 +604,12 @@ def easyPredict(sequences: Iterable[str] | str, modelFname: str) -> \
     If, instead, you passed in a single string as ``sequences``,
     it will be ``(numHeads x outputLength x numTasks)``. As before, this will be a list
     (one entry per head) of arrays of shape ``(outputLength x numTasks)``
+
+    As a bonus feature, if you pass in a sequence that is longer than your model's
+    input length, this function will make tiling predictions over as much of the
+    sequence as possible. For example, if my model has an input length of 3 kb
+    and an output of 1 kb, then if I provide an input sequence that is 4 kb long,
+    I will get a 2 kb output prediction.
 
     **Example:**
 
@@ -626,7 +647,8 @@ def easyPredict(sequences: Iterable[str] | str, modelFname: str) -> \
         # In case we got some weird iterable, turn it into a list.
         sequences = list(sequences)
     logUtils.debug(f"Running {len(sequences)} predictions using model {modelFname}")
-    predictor = ThreadedBatchPredictor(modelFname, 64, start=False)
+    predictor = ThreadedBatchPredictor(modelFname, 64, start=False, produceProfiles=True,
+                                       quiet=quiet)
     ret = []
     remainingToRead = 0
     with predictor:
@@ -634,24 +656,12 @@ def easyPredict(sequences: Iterable[str] | str, modelFname: str) -> \
             predictor.submitString(s, 1)
             remainingToRead += 1
             while predictor.outputReady():
-                outputs = predictor.getOutput()[0]
-                numHeads = len(outputs) // 2
-                headProfiles = []
-                for h in range(numHeads):
-                    logits = outputs[h]
-                    logcounts = outputs[h + numHeads]
-                    headProfiles.append(logitsToProfile(logits, logcounts))  # type: ignore
-                ret.append(headProfiles)
+                outputs = predictor.getOutputProfile()[0]
+                ret.append(outputs)
                 remainingToRead -= 1
         for _ in range(remainingToRead):
-            outputs = predictor.getOutput()[0]
-            numHeads = len(outputs) // 2
-            headProfiles = []
-            for h in range(numHeads):
-                logits = outputs[h]
-                logcounts = outputs[h + numHeads]
-                headProfiles.append(logitsToProfile(logits, logcounts))  # type: ignore
-            ret.append(headProfiles)
+            outputs = predictor.getOutputProfile()[0]
+            ret.append(outputs)
     if singleReturn:
         return ret[0]
     return ret
@@ -723,7 +733,8 @@ def easyInterpretFlat(sequences: Iterable[str] | str, modelFname: str,
            "counts": array of shape (inputLength,)}
     """
     # pylint: disable=import-outside-toplevel
-    from bpreveal.interpretUtils import ListGenerator, FlatListSaver, FlatRunner
+    from bpreveal import interpretFlat
+    from bpreveal.internal.interpretUtils import ListGenerator, FlatListSaver, InterpRunner
     # pylint: enable=import-outside-toplevel
     assert not constants.getTensorflowLoaded(), \
         "Cannot use easy functions after loading tensorflow."
@@ -738,10 +749,12 @@ def easyInterpretFlat(sequences: Iterable[str] | str, modelFname: str,
     generator = ListGenerator(sequences)
     profileSaver = FlatListSaver(generator.numSamples, generator.inputLength)
     countsSaver = FlatListSaver(generator.numSamples, generator.inputLength)
-    batcher = FlatRunner(modelFname=modelFname, headID=headID, numHeads=heads,
-                         taskIDs=taskIDs, batchSize=1, generator=generator,
-                         profileSaver=profileSaver, countsSaver=countsSaver,
-                         numShuffles=numShuffles, kmerSize=kmerSize)
+    profileMetric = interpretFlat.profileMetric(headID, taskIDs)
+    countsMetric = interpretFlat.countsMetric(heads, headID)
+    batcher = InterpRunner(modelFname=modelFname, metrics=[profileMetric, countsMetric],
+                           batchSize=1, generator=generator, savers=[profileSaver, countsSaver],
+                           numShuffles=numShuffles, kmerSize=kmerSize, numThreads=2,
+                           backend="shap", useHypotheticalContribs=True, shuffler=None)
     batcher.run()
     logUtils.debug("Interpretation complete. Organizing outputs.")
     if keepHypotheticals:
@@ -778,7 +791,7 @@ class BatchPredictor:
 
     Now, you submit any sequences you want predicted, using the submit methods.
 
-    Once you've submitted all of your sequences, you can get your results with
+    Once you've submitted some or all of your sequences, you can get your results with
     the ``getOutput()`` method.
 
     Note that the ``getOutput()` method returns *one* result at a time, and
@@ -829,9 +842,9 @@ class BatchPredictor:
             preds, outLabel = batcher.getOutput()  # WRONG: Runs a whole batch for each query
             processPredictions(preds, outLabel)
 
-    :param modelFname: The name of the BPReveal model that you want to make
-        predictions from. It's the same name you give for the model in any of
-        the other BPReveal tools.
+    :param modelFname: The name of the BPReveal model on disk that you want to
+        make predictions from. It's the same name you give for the model in any
+        of the other BPReveal tools.
     :param batchSize: is the number of samples that should be run simultaneously
         through the model.
     :param start: Ignored, but present here to give ``BatchPredictor`` the same API
@@ -840,19 +853,38 @@ class BatchPredictor:
     :param numThreads: Ignored, only present for compatibility with the API for
         ``ThreadedBatchPredictor``. A (non-threaded)``BachPredictor`` runs its calculations
         in the main thread and will block when it's actually doing calculations.
+    :param produceProfiles: Ignored, only for compatibility with ThreadedBatchPredictor.
+        With a non-threaded BatchPredictor, you can choose to use getOutput() or
+        getOutputProfile() after the prediction has been made.
+    :param quiet: If True, then all output to stderr will be suppressed in tensorflow-related
+        code. Useful for interactive use.
     """
 
     def __init__(self, modelFname: str, batchSize: int, start: bool = True,
-                 numThreads: int = 0) -> None:
+                 numThreads: int = 0, produceProfiles: bool = False,
+                 quiet: bool = False) -> None:
         """Start up the BatchPredictor.
 
         This will load your model, and get ready to make predictions.
         """
         logUtils.debug(f"Creating batch predictor for model {modelFname}.")
-        if not constants.getTensorflowLoaded():
-            # We haven't loaded Tensorflow yet.
+        # pylint: disable=import-outside-toplevel
+        import bpreveal.internal.disableTensorflowLogging as disableTfLogging
+        # pylint: enable=import-outside-toplevel
+        if quiet:
+            self.suppress = disableTfLogging.SuppressStderr
+        else:
+            self.suppress = disableTfLogging.LeaveStderrAlone
+        with self.suppress():
             setMemoryGrowth()
-        self._model = loadModel(modelFname)  # type: ignore
+            self._model = loadModel(modelFname)  # type: ignore
+        self._inputLength = self._model.input.shape[1]
+        self._outputLength = self._model.output[0].shape[1]
+        self._tasksPerHead = []
+        outputs = self._model.output
+        for i in range(len(outputs) // 2):
+            # The // 2 is because we only care about profile outputs here.
+            self._tasksPerHead.append(outputs[i].shape[2])
         logUtils.debug("Model loaded.")
         self._batchSize = batchSize
         # Since I'll be putting things in and taking them out often,
@@ -864,6 +896,7 @@ class BatchPredictor:
         self._outWaiting = 0
         del start  # We don't refer to start.
         del numThreads
+        del produceProfiles
 
     def __enter__(self):
         """Do nothing; context manager is a no-op for a non-threaded ``BatchPredictor``."""
@@ -900,8 +933,41 @@ class BatchPredictor:
             one-hot encoded sequence to predict.
         :param label: Any object; it will be returned with the prediction.
         """
-        self._inQueue.appendleft((sequence, label))
-        self._inWaiting += 1
+        # pylint: disable=import-outside-toplevel
+        import pybedtools
+        from bpreveal import bedUtils
+        # pylint: enable=import-outside-toplevel
+        if sequence.shape[0] > self._inputLength:
+            # We need to tile.
+            logUtils.logFirstN(
+                logUtils.INFO,
+                f"Found an input with length {sequence.shape[0]} but "
+                f"the model has input length {self._inputLength}. Automatic "
+                "tiling of input window enabled. This may incur a performance cost.",
+                1)
+            outputTiles = list(
+                bedUtils.tileSegments(self._inputLength, self._outputLength,
+                                      [pybedtools.Interval("chrN", 0, sequence.shape[0])],
+                                      0))
+            for ot in outputTiles:
+                center = (ot.end + ot.start) // 2
+                start = center - self._inputLength // 2
+                end = start + self._inputLength
+                query = {"sequence": sequence[start:end],
+                         "label": label,
+                         "numTiles": len(outputTiles),
+                         "tileStart": ot.start - (self._inputLength - self._outputLength) // 2}
+                #  Note that tileStart is relative to the OUTPUT, not the input.
+                self._inQueue.appendleft(query)
+                self._inWaiting += 1
+        else:
+            self._inQueue.appendleft(
+                {"sequence": sequence,
+                 "label": label,
+                 "numTiles": 1,
+                 "tileStart": 0})
+            self._inWaiting += 1
+
         if self._inWaiting >= self._batchSize * 16:
             # We have a ton of sequences to run, so go ahead
             # and run a batch real quick.
@@ -920,10 +986,10 @@ class BatchPredictor:
     def runBatch(self, maxSamples: int | None = None) -> None:
         """Actually run the batch.
 
-        Normally, this will be called by the submit functions,
-        and it will also be called if you ask
-        for output and the output queue is empty (assuming there are
-        sequences waiting in the input queue.)
+        Normally, this will be called by the submit functions, and it will also
+        be called if you ask for output and the output queue is empty (assuming
+        there are sequences waiting in the input queue.) In other words, you
+        don't need to call this function.
 
         :param maxSamples: (Optional) The maximum number of samples to
             run in this batch. It should probably be a multiple of the
@@ -939,26 +1005,22 @@ class BatchPredictor:
         else:
             numSamples = min(self._inWaiting, maxSamples)
         labels = []
-        firstElem = self._inQueue.pop()
-        labels.append(firstElem[1])
-        self._inWaiting -= 1
-        # I need to determine the input length, and I'll do that by looking at
-        # the first sequence.
-        inputLength = firstElem[0].shape[0]
-        modelInputs = np.zeros((numSamples, inputLength, NUM_BASES), dtype=ONEHOT_T)
-        modelInputs[0] = firstElem[0]
-        # With that ugliness out of the way, now I just populate the rest of
-        # the prediction table.
-        writeHead = 1
-        for _ in range(numSamples - 1):
+        counts = []
+        tileStarts = []
+        modelInputs = np.zeros((numSamples, self._inputLength, NUM_BASES), dtype=ONEHOT_T)
+        writeHead = 0
+        for _ in range(numSamples):
             nextElem = self._inQueue.pop()
-            modelInputs[writeHead] = nextElem[0]
-            labels.append(nextElem[1])
+            modelInputs[writeHead] = nextElem["sequence"]
+            labels.append(nextElem["label"])
+            counts.append(nextElem["numTiles"])
+            tileStarts.append(nextElem["tileStart"])
             writeHead += 1
             self._inWaiting -= 1
-        preds = self._model.predict(modelInputs[:numSamples, :, :],
-                                    verbose=0,  # type: ignore
-                                    batch_size=self._batchSize)
+        with self.suppress():
+            preds = self._model.predict(modelInputs[:numSamples, :, :],
+                                        verbose=0,  # type: ignore
+                                        batch_size=self._batchSize)
         # I now need to parse out the shape of the prediction to
         # generate the correct outputs.
         numHeads = len(preds) // 2  # Two predictions (logits & logcounts) for each head.
@@ -983,7 +1045,9 @@ class BatchPredictor:
             # a scalar value inside a numpy array.
             for j in range(numHeads):
                 curHeads.append(float(preds[j + numHeads][i]))
-            self._outQueue.appendleft((curHeads, labels[i]))
+            self._outQueue.appendleft(
+                {"preds": curHeads, "label": labels[i], "numTiles":
+                 counts[i], "tileStart": tileStarts[i]})
             self._outWaiting += 1
 
     def outputReady(self) -> bool:
@@ -1042,6 +1106,11 @@ class BatchPredictor:
         If the batcher doesn't have any output ready but does have some work in the input
         queue, then calling this function will block until the calculation is complete.
         If there is output ready, then this function will not block.
+
+        This function will error out if an input sequence was longer than the model's input
+        length, since there's no logical way to combine the logits and logcounts in that case.
+        If you want to use longer sequences, you should get outputs with getOutputProfile().
+
         """
         if not self._outWaiting:
             if self._inWaiting:
@@ -1050,8 +1119,77 @@ class BatchPredictor:
             else:
                 raise queue.Empty("There are no outputs ready, and the input queue is empty.")
         ret = self._outQueue.pop()
+        assert ret["numTiles"] == 1, "Attempted to getOutput but the query input size was not " \
+            "equal to the model's input size. Use getOutputProfile() instead."
         self._outWaiting -= 1
-        return ret
+        return (ret["preds"], ret["label"])
+
+    def getOutputProfile(self) -> tuple[list, typing.Any]:
+        """Return one of the predictions made by the model, in profile space.
+
+        Whereas getOutput returns the logits and logcounts directly from the model,
+        this function converts those results into a profile. This is necessary if you
+        provide an input sequence that is longer than the model's input length.
+
+        This implementation guarantees that predictions will be returned in
+        the same order as they were submitted.
+
+        :return: A two-tuple.
+        :rtype: ``tuple[list[PRED_AR_T], typing.Any]``
+
+        * The first element will be a list of length ``numHeads``, representing the
+          output from the model. Since the output of the model will always have
+          a dimension representing the batch size, and this function only returns
+          the result of running a single sequence, the dimension representing
+          the batch size is removed. In other words, running the model on a
+          single example would give a profile of shape
+          ``(1 x output-length x num-tasks)``.
+          But this function will remove that, so you will get an array of shape
+          ``(output-length x numTasks)``
+
+        * The second element will be the label you passed in with the original
+          sequence.
+
+        Graphically::
+
+            ( [<head-1-profile>, <head-2-profile>, ...],
+              label)
+
+        If the batcher doesn't have any output ready but does have some work in the input
+        queue, then calling this function will block until the calculation is complete.
+        If there is output ready, then this function will not block.
+        """
+        if not self._outWaiting:
+            if self._inWaiting:
+                # There are inputs that have not been processed. Run the batch.
+                self.runBatch()
+            else:
+                raise queue.Empty("There are no outputs ready, and the input queue is empty.")
+        rets = []
+        ret = self._outQueue.pop()
+        self._outWaiting -= 1
+        rets.append(ret)
+        for _ in range(ret["numTiles"] - 1):
+            rets.append(self._outQueue.pop())
+            self._outWaiting -= 1
+        outputWidth = rets[-1]["tileStart"] + self._outputLength
+        headProfiles = [np.zeros((outputWidth, tasks)) for tasks in self._tasksPerHead]
+        headNumPreds = [np.zeros((outputWidth, tasks)) for tasks in self._tasksPerHead]
+        for ret in rets:
+            preds = ret["preds"]
+            outputStart = ret["tileStart"]
+            outputStop = outputStart + self._outputLength
+            for h in range(len(self._tasksPerHead)):
+                logits = preds[h]
+                logcounts = preds[h + len(self._tasksPerHead)]
+                headProfiles[h][outputStart:outputStop] += logitsToProfile(logits, logcounts)
+                headNumPreds[h][outputStart:outputStop] += 1
+        for h in range(len(self._tasksPerHead)):
+            assert np.min(headNumPreds[h]) == 1, \
+                "Missed placing an output somewhere! Please report this bug."
+            headProfiles[h] /= headNumPreds[h]
+
+        return (headProfiles, rets[0]["label"])
 
 
 class ThreadedBatchPredictor:
@@ -1076,6 +1214,9 @@ class ThreadedBatchPredictor:
         with predictor:
             # use as a normal BatchPredictor.
         # On leaving the context, the predictor is shut down.
+        # But you can spin it up if you need it again:
+        with predictor:
+            # use the predictor some more.
 
     The batcher guarantees that the order in which you get results is the same as
     the order you submitted them in, even though the internal calculations may
@@ -1088,22 +1229,32 @@ class ThreadedBatchPredictor:
         (i.e., a ``with`` statement).
     :param numThreads: How many predictors should be spawned?
         I recommend 2 or 3.
+    :param produceProfiles: If True, then you can call getOutputProfile()
+        If False (the default), then you can only call getProfile().
+        You have to specify this before starting the batcher because the profile
+        production is done in parallel and so this class needs to know what sort
+        of output you will want so it can have it ready for you when you need it.
+    :param quiet: If True, redirect all stdout from tensorflow to the trash.
 
     """
 
     def __init__(self, modelFname: str, batchSize: int, start: bool = False,
-                 numThreads: int = 1) -> None:
+                 numThreads: int = 1, produceProfiles: bool = False,
+                 quiet: bool = False) -> None:
         """Build the batch predictor."""
         logUtils.debug(f"Creating threaded batch predictor for model {modelFname}.")
         self._batchSize = batchSize
         self._modelFname = modelFname
         self._batchSize = batchSize
+        self._produceProfiles = produceProfiles
         # Since I'll be putting things in and taking them out often,
         # I'm going to use a queue data structure, where those operations
         # are efficient.
         self._batchers = None
         self._numThreads = numThreads
         self.running = False
+        self._quiet = quiet
+        self._contextDepth = 0
         if start:
             self.start()
 
@@ -1112,12 +1263,27 @@ class ThreadedBatchPredictor:
 
         Used in a context manager, this is the first thing that gets called
         inside a with statement.
+
+        This context manager is reusable, meaning that it can be nested like this::
+
+            with predictor:
+                # blah, blah, blah
+                with predictor:
+                    # make predictions
+
+        In this case, the inner call will simply keep batcher alive, and it will
+        only shut down when the outermost context exits.
         """
-        self.start()
+        self._contextDepth += 1
+        if self._contextDepth == 1:
+            self.start()
 
     def __exit__(self, exceptionType, exceptionValue, exceptionTraceback):  # noqa: ANN001
         """When leaving a context manager's with statement, shut down the batcher."""
-        self.stop()
+        self._contextDepth -= 1
+        if self._contextDepth == 0:
+            # We're out of the last context manager now.
+            self.stop()
         if exceptionType is not None:
             return False
         del exceptionValue  # Disable unused warning
@@ -1146,7 +1312,7 @@ class ThreadedBatchPredictor:
                 nextBatcher = multiprocessing.Process(
                     target=_batcherThread,
                     args=(self._modelFname, self._batchSize, nextInQueue,
-                          nextOutQueue),
+                          nextOutQueue, self._produceProfiles, self._quiet),
                     daemon=True)
                 nextBatcher.start()
                 self._batchers.append(nextBatcher)
@@ -1169,7 +1335,7 @@ class ThreadedBatchPredictor:
                 logUtils.debug("Shutting down threaded batcher.")
             if self._batchers is None:
                 raise ValueError("Attempting to shut down a running ThreadedBatchPredictor"
-                    "When its _batchers is None.")
+                                 "When its _batchers is None.")
             for i in range(self._numThreads):
                 self._inQueues[i].put("shutdown")
                 self._inQueues[i].close()
@@ -1258,6 +1424,8 @@ class ThreadedBatchPredictor:
         Same semantics and blocking behavior as
         :py:meth:`BatchPredictor.getOutput<bpreveal.utils.BatchPredictor.getOutput>`.
         """
+        assert not self._produceProfiles, "Cannot getOutput() on a batcher that is set " \
+            "to produce profiles. Use getOutputProfile() instead."
         nextQueueIdx = self._outQueueOrder.pop()
         if self._outQueues[nextQueueIdx].empty():
             if self._inFlight:
@@ -1269,26 +1437,52 @@ class ThreadedBatchPredictor:
         self._inFlight -= 1
         return ret
 
+    def getOutputProfile(self) -> tuple[list, typing.Any]:
+        """Get a single output, but in profile space instead of logits.
+
+        :return: The model's predictions.
+        :rtype: ``tuple[list[PRED_AR_T], typing.Any]``
+
+        Same semantics and blocking behavior as
+        :py:meth:`BatchPredictor.getOutputProfile<bpreveal.utils.BatchPredictor.getOutputProfile>`.
+        """
+        assert self._produceProfiles, "Cannot getOutputProfile unless the batcher was " \
+            "configured with produceProfile=True."
+        nextQueueIdx = self._outQueueOrder.pop()
+        if self._outQueues[nextQueueIdx].empty():
+            if self._inFlight:
+                # There are inputs that have not been processed. Run the batch.
+                self._inQueues[nextQueueIdx].put("finishBatch")
+            else:
+                raise queue.Empty("The batcher is empty; cannot getOutputProfile().")
+        ret = self._outQueues[nextQueueIdx].get()
+        self._inFlight -= 1
+        return ret
+
 
 def _batcherThread(modelFname: str, batchSize: int, inQueue: CrashQueue,
-                   outQueue: CrashQueue) -> None:
+                   outQueue: CrashQueue, produceProfiles: bool, quiet: bool) -> None:
     """Run batches from the ``ThreadedBatchPredictor`` in this separate thread.
+
+    If produceProfiles is True, then this will emit results from getOutputProfile().
+    Otherwise, it will emit results from getOutput().
+    Since this thread will put outputs into the queue before the user has asked,
+    we need to know a priori whether we should produce profiles.
 
     .. note::
         Sets :py:data:`bpreveal.internal.constants.GLOBAL_TENSORFLOW_LOADED`.
     """
     assert not constants.getTensorflowLoaded(), "Cannot use the threaded predictor " \
         "after loading tensorflow."
-    # pylint: disable=import-outside-toplevel, unused-import
-    import bpreveal.internal.disableTensorflowLogging  # noqa
-    # pylint: enable=import-outside-toplevel, unused-import
     logUtils.debug("Starting subthread")
-    setMemoryGrowth()
     # Instead of reinventing the wheel, the thread that actually runs the batches
     # just creates a BatchPredictor.
-    batcher = BatchPredictor(modelFname, batchSize)
+    batcher = BatchPredictor(modelFname, batchSize, quiet=quiet)
     predsInFlight = 0
     numWaits = 0
+    getOutput = batcher.getOutput
+    if produceProfiles:
+        getOutput = batcher.getOutputProfile
     while True:
         # No timeout because this batcher could be waiting for a very long time to get
         # inputs.
@@ -1306,7 +1500,7 @@ def _batcherThread(modelFname: str, batchSize: int, inQueue: CrashQueue,
                 # Nope, go ahead and give the batcher a spin while we wait.
                 batcher.runBatch(maxSamples=batchSize)
                 while not outQueue.full() and batcher.outputReady():
-                    outQueue.put(batcher.getOutput())
+                    outQueue.put(getOutput())
                     predsInFlight -= 1
             continue
         numWaits = 0
@@ -1320,12 +1514,11 @@ def _batcherThread(modelFname: str, batchSize: int, inQueue: CrashQueue,
                 # If there's an answer and the out queue can handle it, go ahead
                 # and send it.
                 while not outQueue.full() and batcher.outputReady():
-                    outQueue.put(batcher.getOutput())
+                    outQueue.put(getOutput())
                     predsInFlight -= 1
             case "finishBatch":
                 while predsInFlight:
-                    outPred = batcher.getOutput()
-                    outQueue.put(outPred)
+                    outQueue.put(getOutput())
                     predsInFlight -= 1
             case "shutdown":
                 # End the thread.

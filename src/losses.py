@@ -1,5 +1,10 @@
-"""Defines the Multinomial NLL loss and the adaptive counts loss."""
+"""Defines the Multinomial NLL loss and the adaptive counts loss.
+
+These are derived from the basepairmodels repository, which is licensed under
+an MIT license. You can find a copy at ``etc/basepairmodels_license.txt``.
+"""
 from collections.abc import Callable
+from bpreveal.internal import disableTensorflowLogging  # pylint: disable=unused-import # noqa
 import tensorflow as tf
 import tensorflow_probability as tfp
 from keras import ops  # type: ignore
@@ -26,7 +31,7 @@ def multinomialNll(trueCounts: tf.Tensor, logits: tf.Tensor) -> float:
     flatLogits = ops.reshape(logits, [numBatches, numSamples])
     totalCounts = ops.sum(flatCounts, axis=1)
     distribution = tfp.distributions.Multinomial(total_count=totalCounts,
-            logits=flatLogits)
+                                                 logits=flatLogits)
     logprobs = distribution.log_prob(flatCounts)
     batchSize = ops.shape(trueCounts)[0]
     sumProbs = ops.sum(logprobs)

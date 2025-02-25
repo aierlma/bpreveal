@@ -8,6 +8,7 @@ import time
 import h5py
 import numpy as np
 from numpy._typing import NDArray
+from bpreveal.internal import disableTensorflowLogging  # pylint: disable=unused-import # noqa
 import keras
 from bpreveal import logUtils
 from bpreveal.internal.constants import MODEL_ONEHOT_T, NUM_BASES, ONEHOT_T, PRED_T
@@ -128,7 +129,7 @@ class H5BatchGenerator(keras.utils.Sequence):
     def _shiftSequence(self, regionIndexes: NDArray, sliceCols: NDArray) -> None:
         # This is a good target for optimization - it takes multiple seconds!
         slideChar(self.fullSequences, self._allBatchSequences,
-              regionIndexes, sliceCols)
+                  regionIndexes, sliceCols)
 
     def _shiftData(self, regionIndexes: NDArray, sliceCols: NDArray) -> None:
         # This is a big target for optimization - it takes seconds to load a batch.

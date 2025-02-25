@@ -113,7 +113,7 @@ def plotLogo(values: PRED_AR_T, width: float, ax: AXES_T,
             left = predIdx * width / values.shape[0] + spaceBetweenLetters / 2 + origin[0]
             right = left + width / values.shape[0] - spaceBetweenLetters
             _drawLetter(nl[0], left=left, right=right, bottom=base, top=top,
-                       color=getColor(predIdx, nl[0]), ax=ax, flip=True)
+                        color=getColor(predIdx, nl[0]), ax=ax, flip=True)
             top = base
 
         # Draw the positive letters.
@@ -123,7 +123,7 @@ def plotLogo(values: PRED_AR_T, width: float, ax: AXES_T,
             left = predIdx * width / values.shape[0] + spaceBetweenLetters / 2 + origin[0]
             right = left + width / values.shape[0] - spaceBetweenLetters
             _drawLetter(pl[0], left=left, right=right, bottom=base, top=top,
-                       color=getColor(predIdx, pl[0]), ax=ax)
+                        color=getColor(predIdx, pl[0]), ax=ax)
             base = top
 
 
@@ -212,7 +212,7 @@ def massageTickLabels(labelList: list[str]) -> list[str]:
             else:
                 break
         if apostrophePos > 1:
-            newLabel = "´" + "".join(curLabel[apostrophePos + 1:])
+            newLabel = "’" + "".join(curLabel[apostrophePos + 1:])
         else:
             newLabel = "".join(curLabel)
         labelsThousands[pos] = newLabel
@@ -508,7 +508,7 @@ def addResizeCallbacks(ax: AXES_T, which: Literal["both"] | Literal["x"] | Liter
             ub = int(newLim[1] + 0.5)
         else:
             ub = int(newLim[1] + 1.5)
-        ticksY, tickLabelsY = getCoordinateTicks(lb, ub, numYTicks, False)
+        ticksY, tickLabelsY = getCoordinateTicks(lb + 1, ub, numYTicks, False)
         ticksY = [x - 0.5 for x in ticksY]
         ax.set_yticks(ticksY, tickLabelsY, fontsize=fontSizeTicks, fontfamily=FONT_FAMILY)
 
@@ -521,7 +521,7 @@ def addResizeCallbacks(ax: AXES_T, which: Literal["both"] | Literal["x"] | Liter
         if math.fmod(newLim[1], 1) == 0.5:
             ub = int(newLim[1] - 0.5)
         else:
-            ub = int(newLim[1] - 1.5)
+            ub = int(newLim[1] - 0.5)
         ticksX, tickLabelsX = getCoordinateTicks(lb, ub + 1, numXTicks, False)
         ticksX = [x - 0.5 for x in ticksX]
         ax.set_xticks(ticksX, tickLabelsX, fontsize=fontSizeTicks, fontfamily=FONT_FAMILY)
@@ -537,7 +537,7 @@ def addResizeCallbacks(ax: AXES_T, which: Literal["both"] | Literal["x"] | Liter
 
 def _getAnnotationShape(shape: str, aleft: float, aright: float,
                         height: float) -> tuple[list[float], list[float]]:
-    """Gets a set of X and Y coordinates that will draw the given shape at the given position.
+    """Get a set of X and Y coordinates that will draw the given shape at the given position.
 
     :param shape: A valid shape string.
     :param aleft: The left edge of the shape.
@@ -616,10 +616,12 @@ def addAnnotations(axAnnot: AXES_T, annotations: list[dict], boxHeight: float,
                      color=parseSpec(annot["color"]))
         if not mini:
             axAnnot.text((aleft + aright) / 2, bottom + height / 2, annot["name"],
-                     fontstyle="italic", fontsize=fontSize, fontfamily=FONT_FAMILY,
-                     ha="center", va="center")
+                         fontstyle="italic", fontsize=fontSize, fontfamily=FONT_FAMILY,
+                         ha="center", va="center")
         usedNames[annot["name"]] = annot["color"]
+    logUtils.debug("Done applying annotations, scaling axes.")
     axAnnot.set_xlim(genomeStartX, genomeEndX)
+    logUtils.debug("Annotation scaling complete.")
     return usedNames
 
 
@@ -688,24 +690,27 @@ def addPisaPlot(shearMat: IMPORTANCE_AR_T, colorSpan: float, axPisa: AXES_T,
         case "on":
             axPisa.plot([xStart, xEnd], [xStart, xEnd], "k--", lw=0.5)
         case "edge":
-            axPisa.plot([xStart, xStart + xlen * 0.02 + 1], [xStart, xStart + xlen * 0.02 + 1],
+            axPisa.plot([xStart, xStart + xlen * 0.02], [xStart, xStart + xlen * 0.02],
                         "k-", lw=2.0)
-            axPisa.plot([xEnd - xlen * 0.02 - 1, xEnd],
-                        [xEnd - xlen * 0.02 - 1, xEnd], "k-", lw=2.0)
+            axPisa.plot([xEnd - xlen * 0.02, xEnd],
+                        [xEnd - xlen * 0.02, xEnd], "k-", lw=2.0)
     if not mini:
         axPisa.set_ylabel("Output base coordinate", fontsize=fontSizeAxLabel,
-                      fontfamily=FONT_FAMILY, labelpad=-5)
+                          fontfamily=FONT_FAMILY, labelpad=-5)
     numYTicks = 4 if mini else 10
     addResizeCallbacks(axPisa, "both", numYTicks, numYTicks, fontSizeTicks)
-    axPisa.set_ylim(extent[2] - 0.5, extent[3] + 0.5)
-    axPisa.set_xlim(extent[0] + 0.5, extent[1] - 0.5)
+    axPisa.set_ylim(extent[2], extent[3])
+    axPisa.set_xlim(extent[0], extent[1])
     match gridMode:
         case "on":
-            axPisa.grid()
+            axPisa.grid(linewidth=0.2)
         case "off":
             pass
     if rasterize:
         axPisa.set_rasterization_zorder(0)
+    for x in axPisa.spines.values():
+        x.set_linewidth(0.1)
+    axPisa.yaxis.set_tick_params(width=0.4)
     return smap
 
 
@@ -742,20 +747,16 @@ def addPisaGraph(similarityMat: IMPORTANCE_AR_T, minValue: float, colorSpan: flo
         Rasterizing can make large pisa graphs much easier to work with downstream, but
         it makes them uneditable.
     """
-
     plotMat = np.array(similarityMat)
     # convert into dB
     plotMat *= math.log2(math.e)
     colorSpan *= math.log2(math.e)
     minValue *= math.log2(math.e)
+    zeroedCmap = bprcolors.getGraphCmap(minValue, colorSpan, cmap)
 
     def addLine(xLower: int, xUpper: int, value: float) -> bool | tuple[float, PathPatch]:
         if abs(value) < minValue:
             return False
-        if value < 0:
-            value += minValue
-        elif value > 0:
-            value -= minValue
         if value > colorSpan:
             value = colorSpan
         if value < -colorSpan:
@@ -776,7 +777,7 @@ def addPisaGraph(similarityMat: IMPORTANCE_AR_T, minValue: float, colorSpan: flo
         normValue = (value + colorSpan) / (2 * colorSpan)
         normα = abs(value / colorSpan)
 
-        color = cmap(normValue, alpha=normα)
+        color = zeroedCmap(normValue, alpha=normα)
         for colorBlock in colorBlocks:
             start, end, colorSpec = colorBlock
             r, g, b = parseSpec(colorSpec)[:3]
@@ -800,11 +801,12 @@ def addPisaGraph(similarityMat: IMPORTANCE_AR_T, minValue: float, colorSpan: flo
         ax.add_patch(p[1])
     ax.set_xlim(0.5 + genomeStart, np.max(plotMat.shape) - 0.5 - 2 * trim + genomeStart)
     ax.set_ylim(0, 1)
+    ax.yaxis.set_tick_params(width=0.4)
     if rasterize:
         ax.set_rasterization_zorder(0)
     # Last quick thing to do - generate a color map.
     norm = mplcolors.Normalize(vmin=-colorSpan, vmax=colorSpan)
-    smap = ScalarMappable(norm=norm, cmap=cmap)
+    smap = ScalarMappable(norm=norm, cmap=zeroedCmap)
     return smap
 
 
@@ -822,13 +824,17 @@ def addCbar(pisaCax: ScalarMappable, axCbar: AXES_T, fontSizeTicks: int,
     bottom, top = axCbar.get_ylim()
     axCbar.set_yticks(cbar.get_ticks(), [f"{x:0.2f}" for x in cbar.get_ticks()],
                       fontsize=fontSizeTicks, fontfamily=FONT_FAMILY)
+    axCbar.yaxis.set_tick_params(width=0.4)
     axCbar.set_ylim(bottom, top)
+    axCbar.set_frame_on(False)
     if mini:
         axCbar.set_xlabel("PISA\neffect\n(log₂(fc))",
-                          fontsize=fontSizeAxLabel, fontfamily=FONT_FAMILY)
+                          fontsize=fontSizeAxLabel, fontfamily=FONT_FAMILY,
+                          x=1)
     else:
         axCbar.set_xlabel("PISA effect\n(log₂(fc))",
-                          fontsize=fontSizeAxLabel, fontfamily=FONT_FAMILY)
+                          fontsize=fontSizeAxLabel, fontfamily=FONT_FAMILY,
+                          x=1)
 
 
 def addLegend(usedNames: dict[str, COLOR_SPEC_T], axLegend: AXES_T, fontSize: int) -> None:
@@ -855,8 +861,9 @@ def addLegend(usedNames: dict[str, COLOR_SPEC_T], axLegend: AXES_T, fontSize: in
 
 def getPisaAxes(fig: matplotlib.figure.Figure, left: float, bottom: float,
                 width: float, height: float, mini: bool) -> tuple[AXES_T, AXES_T,
-        AXES_T, AXES_T, AXES_T, AXES_T | None]:
-    """Generates the various axes that will be needed for a PISA plot.
+                                                                  AXES_T, AXES_T,
+                                                                  AXES_T, AXES_T | None]:
+    """Generate the various axes that will be needed for a PISA plot.
 
     :param fig: The figure to draw the axes on.
     :param left: The left edge, as a fraction of the figure width, for the plots.
@@ -891,18 +898,18 @@ def getPisaAxes(fig: matplotlib.figure.Figure, left: float, bottom: float,
     axLegend = None
     if mini:
         axLegend = fig.add_axes((left + pisaWidth + profileWidth + cbarSpaceWidth,
-                            bottom + seqHeight + pisaHeight * (1 / 3 + 1 / 7),
-                            cbarWidth * 3, pisaHeight * (1 - 1 / 3 - 1 / 7)))
+                                 bottom + seqHeight + pisaHeight * (1 / 3 + 1 / 7),
+                                 cbarWidth * 3, pisaHeight * (1 - 1 / 3 - 1 / 7)))
         axLegend.set_axis_off()
     axAnnot = fig.add_axes((left,
-                            bottom + seqHeight + 2 * pisaHeight / 3,
+                            bottom + seqHeight + 0.01 * pisaHeight,
                             pisaWidth,
-                            pisaHeight / 3),
+                            pisaHeight * 0.2),
                            sharex=axPisa)
 
     axSeq.set_frame_on(False)
     axSeq.set_yticks([])
-    axAnnot.set_ylim(-1, 0)
+    axAnnot.set_ylim(0, -1)
     # We don't want to resize the y-axis of the annotation axis, even if the user
     # is zooming around. So every time a key gets released, set the ylim for the
     # annotation axis to the appropriate value.
@@ -977,7 +984,7 @@ def getPisaGraphAxes(fig: matplotlib.figure.Figure, left: float, bottom: float, 
     axImportance = fig.add_axes((left, bottom + seqBase, graphWidth, seqHeight),
                                 sharex=axGraph)
     axPredictions = fig.add_axes((left, bottom + profileBase,
-                              graphWidth, profileHeight),
+                                  graphWidth, profileHeight),
                                  sharex=axGraph)
 
     axCbar = fig.add_axes((left + width - cbarWidth,
@@ -987,8 +994,8 @@ def getPisaGraphAxes(fig: matplotlib.figure.Figure, left: float, bottom: float, 
     axLegend = None
     if mini:
         axLegend = fig.add_axes((left + width - cbarWidth,
-                            bottom + graphBase + graphHeight * (1 / 3 + 1 / 7),
-                            cbarWidth * 3, graphHeight * (1 - 1 / 3 - 1 / 7)))
+                                 bottom + graphBase + graphHeight * (1 / 3 + 1 / 7),
+                                 cbarWidth * 3, graphHeight * (1 - 1 / 3 - 1 / 7)))
         axLegend.set_axis_off()
     axAnnot = fig.add_axes((left, bottom + annotBase, graphWidth, annotHeight),
                            sharex=axGraph)
@@ -1042,6 +1049,7 @@ def addVerticalProfilePlot(profile: PRED_AR_T, axProfile: AXES_T,
         axProfile.set_xticks(profileXticks, profileXticks, fontsize=fontSizeTicks,
                              fontfamily=FONT_FAMILY)
         axProfile.set_xlabel("Profile", fontsize=fontSizeAxLabel, fontfamily=FONT_FAMILY)
+    axProfile.xaxis.set_tick_params(width=0.4)
 
 
 def addHorizontalProfilePlot(values: PRED_AR_T, colors: list[DNA_COLOR_SPEC_T], sequence: str,
@@ -1067,11 +1075,13 @@ def addHorizontalProfilePlot(values: PRED_AR_T, colors: list[DNA_COLOR_SPEC_T], 
     :param labelXAxis: If True, then put ticks and tick labels on the x-axis, and also
         remove any labels from axGraph, if axGraph is not None.
     :param yAxisLabel: Text to display on the left side of the axis.
-    :param mini: If True, use fewer x-ticks.
+    :param mini: If True, use fewer x-ticks and don't show a label on the x-axis.
+        Note that even if ``labelXAxis`` is ``True``, the string ``Input base coordinate``
+        will not be shown if ``mini`` is ``True``.
     """
     numXTicks = 4 if mini else 10
     addResizeCallbacks(axSeq, "x", 0, numXTicks, fontSizeTicks)
-    axSeq.set_xlim(0.5 + genomeStartX, genomeEndX - 0.5)
+    axSeq.set_xlim(genomeStartX, genomeEndX)
     if showSequence:
         # We have a short enough window to draw individual letters.
         seqOhe = utils.oneHotEncode(sequence) * 1.0
@@ -1079,7 +1089,8 @@ def addHorizontalProfilePlot(values: PRED_AR_T, colors: list[DNA_COLOR_SPEC_T], 
             seqOhe[i, :] *= values[i]
         # Draw the letters.
         plotLogo(seqOhe, len(sequence), axSeq, colors=colors, origin=(genomeStartX, 0))
-        axSeq.set_ylim(float(np.min(seqOhe)), float(np.max(seqOhe)))
+        ymin = min(np.min(seqOhe), 0)
+        axSeq.set_ylim(float(ymin), float(np.max(seqOhe)))
     else:
         # Window span too big - just show a profile.
         for pos, score in enumerate(values):
@@ -1090,15 +1101,17 @@ def addHorizontalProfilePlot(values: PRED_AR_T, colors: list[DNA_COLOR_SPEC_T], 
         if min(values) < 0:
             # Only draw the zero line if there are negative values.
             axSeq.plot([0, values.shape[0]], [0, 0], "k--", lw=0.5)
-        axSeq.set_ylim(min(values), max(values))
+        ymin = min(0, min(values))  # pylint: disable=W3301
+        axSeq.set_ylim(ymin, max(values))
     if labelXAxis:
-        axSeq.xaxis.set_tick_params(labelbottom=True, which="major")
-        axSeq.set_xlabel("Input base coordinate", fontsize=fontSizeAxLabel,
-                         fontfamily=FONT_FAMILY)
+        axSeq.xaxis.set_tick_params(labelbottom=True, which="major", width=0.4)
+        if not mini:
+            axSeq.set_xlabel("Input base coordinate", fontsize=fontSizeAxLabel,
+                             fontfamily=FONT_FAMILY)
         if axGraph is not None:
             axGraph.tick_params(axis="x", which="major", length=0, labelbottom=False)
     else:
-        axSeq.xaxis.set_tick_params(labelbottom=False)
+        axSeq.xaxis.set_tick_params(labelbottom=False, width=0.4)
     axSeq.set_ylabel(yAxisLabel, fontsize=fontSizeAxLabel,
                      fontfamily=FONT_FAMILY, rotation=0, loc="bottom", labelpad=40)
 # Copyright 2022, 2023, 2024 Charles McAnany. This file is part of BPReveal. BPReveal is free software: You can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 2 of the License, or (at your option) any later version. BPReveal is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details. You should have received a copy of the GNU General Public License along with BPReveal. If not, see <https://www.gnu.org/licenses/>.  # noqa

@@ -68,7 +68,7 @@ correct-receptive-field
     (Optional) If set to ``true``, then the output array will have the correct width,
     which is input-length - output-length + 1. By default, use the (incorrect) value
     of input-length - output-length, for compatibility with old scripts. In version
-    5.0.0, default will switch from ``false`` to ``true``.
+    5.0.0, the default switched from ``False`` to ``True``.
 
 
 Output Specification
@@ -143,10 +143,27 @@ API
 ---
 
 """
+from collections.abc import Callable
 import bpreveal.schema
 from bpreveal import logUtils
-from bpreveal import interpretUtils
+from bpreveal.internal import interpretUtils
 from bpreveal.internal import interpreter
+
+
+def pisaMetric(headID: int, taskID: int) -> Callable:
+    """A metric to extract the leftmost output logit of a model.
+
+    :param headID: The head number that you want counts for.
+    :param taskID: The task within this head that you want shap values for.
+    :return: A function (that takes a model as its argument) that can
+        be passed into the depths of the interpretation system.
+    """
+    #             Extract the output from the given task.
+    #                Use the leftmost output logit.     |
+    #             Use all samples in this batch.  |     |
+    #           Use the given output head.     |  |     |
+    #                                    ↓     ↓  ↓     ↓
+    return lambda model: model.outputs[headID][:, 0, taskID]
 
 
 def main(config: dict) -> None:
@@ -196,6 +213,7 @@ def main(config: dict) -> None:
                            "error in BPReveal 6.0.0.")
             config["fasta-file"] = config["sequence-fasta"]
         generator = interpretUtils.FastaGenerator(config["fasta-file"])
+        logUtils.info(f"Initialized generator for {config["fasta-file"]}")
         genome = None
     else:
         generator = interpretUtils.PisaBedGenerator(bedFname=config["bed-file"],
@@ -203,6 +221,7 @@ def main(config: dict) -> None:
                                                     inputLength=config["input-length"],
                                                     outputLength=config["output-length"])
         genome = config["genome"]
+        logUtils.info(f"Initialized generator for {config["bed-file"]}")
 
     writer = interpretUtils.PisaH5Saver(outputFname=config["output-h5"],
                                         numSamples=generator.numRegions,
@@ -211,26 +230,33 @@ def main(config: dict) -> None:
                                         genome=genome,
                                         useTqdm=logUtils.getVerbosity() <= logUtils.INFO,
                                         config=str(config))
-    batcher = interpretUtils.PisaRunner(modelFname=config["model-file"],
-                                        headID=config["head-id"],
-                                        taskID=config["task-id"],
-                                        batchSize=10,
-                                        generator=generator,
-                                        saver=writer,
-                                        numShuffles=config["num-shuffles"],
-                                        receptiveField=receptiveField,
-                                        kmerSize=kmerSize,
-                                        numBatchers=numThreads)
+    logUtils.info(f"Initialized saver with output file {config["output-h5"]}")
+    # If you want to use a custom metric, you could add that here.
+    # I can't think of a good reason to use anything other than the PISA
+    # metric for PISA calculations, though.
+    metric = pisaMetric(config["head-id"], config["task-id"])
+    logUtils.info(f"Constructed metric for head {config["head-id"]} and task {config["task-id"]}.")
+    batcher = interpretUtils.InterpRunner(modelFname=config["model-file"],
+                                          metrics=[metric],
+                                          batchSize=10,
+                                          generator=generator,
+                                          savers=[writer],
+                                          numShuffles=config["num-shuffles"],
+                                          kmerSize=kmerSize,
+                                          numThreads=numThreads,
+                                          backend="shap",
+                                          useHypotheticalContribs=False)
     batcher.run()
+    logUtils.info("PISA interpretation complete, exiting.")
 
 
 if __name__ == "__main__":
     import sys
     if sys.argv[0] in {"interpretPisaBed", "interpretPisaFasta"}:
         logUtils.error("DEPRECATION: You are calling the program " + sys.argv[0] + ". "
-            "It is now just called interpretPisa and automatically detects if you're "
-            "using a bed or fasta file. Instructions for updating: Call the program "
-            "interpretPisa. These old program names will be removed in BPReveal 6.0.0.")
+                       "It is now just called interpretPisa and automatically detects if you're "
+                       "using a bed or fasta file. Instructions for updating: Call the program "
+                       "interpretPisa. These old program names will be removed in BPReveal 6.0.0.")
     configJson = interpreter.evalFile(sys.argv[1])
     assert isinstance(configJson, dict)
     bpreveal.schema.interpretPisa.validate(configJson)

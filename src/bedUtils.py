@@ -138,7 +138,7 @@ def tileSegments(inputLength: int, outputLength: int,
     # Phase 3. Generate tiling regions.
     logUtils.debug("Creating regions.")
     regions = []
-    for s in wrapTqdm(shrunkSegments, "INFO"):
+    for s in wrapTqdm(shrunkSegments, "DEBUG"):
         startPos = s.start
         endPos = startPos + outputLength
         while endPos < s.end:
@@ -253,7 +253,7 @@ def metapeak(intervals: pybedtools.BedTool,
              bigwigFname: str, numThreads: int | None = None) -> constants.PRED_AR_T:
     """Go over the given intervals and build a metapeak.
 
-    :param intervals: A pyBigWig file containing the regions to use.
+    :param intervals: A pyBedTool object containing the regions to use.
         This can also be a list of Interval objects. Each interval
         must be of the same size.
     :param bigwigFname: The name of the bigwig file to read in.

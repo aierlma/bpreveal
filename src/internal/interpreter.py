@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""This module implements a small interpreter.
+"""Implements a small interpreter.
 
 Syntax:
 
@@ -23,7 +23,7 @@ Here are the supported operations:
   * Comparison with ``<``, ``>``, ``<=``, ``>=``, ``==``, and ``!=``.
   * Chained comparison, like ``0.2 < x < 0.5``.
   * Builtin functions: ``exp``, ``log``, ``sqrt``, ``abs``, ``any``,
-      ``all``, ``min``, ``max``, ``sum``, ``len``, ``range``.
+    ``all``, ``min``, ``max``, ``sum``, ``len``, ``range``.
   * Builtin constants: ``e``, ``pi``, ``true``, ``false``, and ``null``.
     The ``true``, ``false``, and ``null`` constants are for compatibility
     with JSON. The Python literals ``True``, ``False``, and ``None`` are also
@@ -71,6 +71,7 @@ class Closure:
     You do not need to use this, it's only necessary to set up letrec-style
     default parameters for lambdas.
     """
+
     def __init__(self, env: ENV_T, args: ast.arguments, body: ast.expr):
         self.env = env.copy()
         self.body = body

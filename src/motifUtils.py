@@ -1,4 +1,9 @@
-"""Provides a set of classes and functions to perform CWM-scanning."""
+"""Provides a set of classes and functions to perform CWM-scanning.
+
+While there is very little shared code, the algorithm is taken from the
+original BPNet repository, which is released under an MIT-style license.
+You can find a copy it ``etc/bpnet_license.txt``.
+"""
 
 # In brief, a summary of these classes and functions are below:
 
@@ -37,7 +42,7 @@ try:
     from bpreveal import jaccard
 except ModuleNotFoundError:
     logUtils.error("Could not find the Jaccard module. You may need to run `make`"
-                  " in the src/ directory.")
+                   " in the src/ directory.")
     raise
 
 
@@ -471,8 +476,8 @@ class Pattern:
         self.pwm = ppmToPwm(self.ppm, backgroundProbs)
         self.pssm = ppmToPssm(self.ppm, backgroundProbs)
         self.cwmTrimLeftPoint, self.cwmTrimRightPoint = cwmTrimPoints(self.cwm,
-                                                            trimThreshold,
-                                                            padding)
+                                                                      trimThreshold,
+                                                                      padding)
         self.cwmTrim = self.cwm[self.cwmTrimLeftPoint:self.cwmTrimRightPoint]
         self.pssmTrim = self.pssm[self.cwmTrimLeftPoint:self.cwmTrimRightPoint]
 
@@ -516,19 +521,19 @@ class Pattern:
         if self.quantileSeqMatch is not None:
             seqMatches = np.array([x.seqMatch for x in self.seqlets])
             self.cutoffSeqMatch =\
-                np.quantile(seqMatches, self.quantileSeqMatch)  # type: ignore
+                float(np.quantile(seqMatches, self.quantileSeqMatch))
         else:
             self.cutoffSeqMatch = None
         if self.quantileContribMatch is not None:
             contribMatches = np.array([x.contribMatch for x in self.seqlets])
             self.cutoffContribMatch =\
-                np.quantile(contribMatches, self.quantileContribMatch)  # type: ignore
+                float(np.quantile(contribMatches, self.quantileContribMatch))
         else:
             self.cutoffContribMatch = None
         if self.quantileContribMagnitude is not None:
             contribMagnitudes = np.array([x.contribMagnitude for x in self.seqlets])
             self.cutoffContribMagnitude =\
-                np.quantile(contribMagnitudes, self.quantileContribMagnitude)  # type: ignore
+                float(np.quantile(contribMagnitudes, self.quantileContribMagnitude))
         else:
             self.cutoffContribMagnitude = None
 
@@ -648,7 +653,8 @@ class Pattern:
 
         This is only present for backwards compatibility and returns a warning.
         """
-        logUtils.warning("You are calling seqletSeqMatches on a Pattern object. "
+        logUtils.warning(
+            "You are calling seqletSeqMatches on a Pattern object. "
             "These have been moved into the Seqlet class. "
             "Instructions for updating: change myPattern.seqletSeqMatches to "
             "[x.seqMatch for x in pattern.seqlets]")
@@ -660,7 +666,8 @@ class Pattern:
 
         This is only present for backwards compatibility and returns a warning.
         """
-        logUtils.warning("You are calling seqletContribMatches on a Pattern object. "
+        logUtils.warning(
+            "You are calling seqletContribMatches on a Pattern object. "
             "These have been moved into the Seqlet class. "
             "Instructions for updating: change myPattern.seqletContribMatches to "
             "[x.contribMatch for x in pattern.seqlets]")
@@ -672,7 +679,8 @@ class Pattern:
 
         This is only present for backwards compatibility and returns a warning.
         """
-        logUtils.warning("You are calling seqletContribMagnitudes on a Pattern object. "
+        logUtils.warning(
+            "You are calling seqletContribMagnitudes on a Pattern object. "
             "These have been moved into the Seqlet class. "
             "Instructions for updating: change myPattern.seqletContribMagnitudes to "
             "[x.contribMagnitude for x in pattern.seqlets]")
@@ -854,11 +862,11 @@ def makePatternObjects(patternSpec: list[dict] | str, modiscoH5Fname: str,
         patternSpecList: list[dict] = patternSpec  # type: ignore
         for metaclusterSpec in patternSpecList:
             curSeqMatchQuantile = metaclusterSpec.get("seq-match-quantile",
-                                                quantileSeqMatch)
+                                                      quantileSeqMatch)
             curContribMatchQuantile = metaclusterSpec.get("contrib-match-quantile",
-                                                quantileContribMatch)
+                                                          quantileContribMatch)
             curContribMagQuantile = metaclusterSpec.get("contrib-magnitude-quantile",
-                                                quantileContribMagnitude)
+                                                        quantileContribMagnitude)
             logUtils.debug(f"Initializing patterns {metaclusterSpec}")
             if "pattern-names" in metaclusterSpec:
                 for i, patternName in enumerate(metaclusterSpec["pattern-names"]):
@@ -1236,7 +1244,7 @@ class PatternScanner:
         if isinstance(chromIdx, bytes):
             logUtils.logFirstN(logUtils.ERROR,
                                "Detected an importance score file from before version 4.0. "
-                               "This will be an error in BPReveal 6.0. "
+                               "This will be an error in BPReveal 7.0. "
                                "Instructions for updating: Re-calculate importance scores.",
                                1)
             chrom = chromIdx.decode("utf-8")
@@ -1331,8 +1339,8 @@ def writerThread(hitQueue: CrashQueue, scannerThreads: int, tsvFname: str) -> No
                 ret = hitQueue.get()
             except queue.Empty:
                 logUtils.warning("Exceeded timeout waiting to see a hit. Either your motif is very"
-                                " rare, or there is a bug in the code. If you see this message"
-                                " multiple times, that's a bug.")
+                                 " rare, or there is a bug in the code. If you see this message"
+                                 " multiple times, that's a bug.")
                 numWaits += 1
                 if numWaits > 10:
                     logUtils.error("Over ten timeouts have occurred. Aborting.")

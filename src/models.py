@@ -1,4 +1,13 @@
-"""Functions to build BPNet-style models."""
+"""Functions to build BPNet-style models.
+
+The model architectures are generally derived from the basepairmodels
+repository, which is released under an MIT-style license. You can find a copy
+at ``etc/basepairmodels_license.txt``.
+
+The arithmetic for residual models is derived from ChromBPNet, but the code is
+not derived from that project.
+"""
+from bpreveal.internal import disableTensorflowLogging  # pylint: disable=unused-import # noqa
 from tensorflow.keras.backend import int_shape  # type: ignore
 import keras.layers as klayers  # type: ignore
 import keras.models as kmodels  # type: ignore
@@ -11,7 +20,7 @@ from bpreveal.internal.constants import NUM_BASES
 def _soloModelHead(dilateOutput: klayers.Layer, individualHead: dict,
                    outputFilterWidth: int) -> \
         tuple[klayers.Layer, klayers.Layer]:
-    """A single output head for a solo model.
+    """Create a single output head for a solo model.
 
     :param dilateOutput: The last dilated convolutional layer of the model.
     :param individualHead: Taken straight from the configuration json.
@@ -101,8 +110,8 @@ def soloModel(inputLength: int, outputLength: int,
         countsOutputs.append(h[1])
         profileOutputs.append(h[0])
     m = kmodels.Model(inputs=inputLayer,
-                    outputs=profileOutputs + countsOutputs,
-                    name=f"{modelName}_model")
+                      outputs=profileOutputs + countsOutputs,
+                      name=f"{modelName}_model")
     return m
 
 
@@ -251,8 +260,8 @@ def transformationModel(soloModelIn: kmodels.Model,
         profileOutputs.append(profileHead)
         countsOutputs.append(countsHead)
     m = kmodels.Model(inputs=soloModelIn.input,
-                    outputs=profileOutputs + countsOutputs,
-                    name="transformation_model")
+                      outputs=profileOutputs + countsOutputs,
+                      name="transformation_model")
     return m
 
 
@@ -372,8 +381,8 @@ def combinedModel(inputLength: int, outputLength: int, numFilters: int,
         combinedProfileHeads.append(addProfile)
         combinedCountsHeads.append(addCounts)
     combModel = kmodels.Model(inputs=inputLayer,
-                            outputs=combinedProfileHeads + combinedCountsHeads,
-                            name="combined_model")
+                              outputs=combinedProfileHeads + combinedCountsHeads,
+                              name="combined_model")
     logUtils.debug("Model built")
     return (combModel, residualModel, readyBiasHeads)
     # pylint: enable=unsubscriptable-object

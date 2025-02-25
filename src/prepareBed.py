@@ -464,7 +464,7 @@ def validateRegions(config: dict, regions: pybedtools.BedTool,
         initialRegions = regions
         if "overlap-max-distance" in config:
             logUtils.warning("    You have set remove-overlaps to false, but you still provided an"
-                            " overlap-max-distance parameter. This parameter is meaningless.")
+                             " overlap-max-distance parameter. This parameter is meaningless.")
         logUtils.debug("    Skipping region overlap removal.")
     # Second, resize the regions to their biggest size.
     unfilteredBigRegions = initialRegions.each(resize,
@@ -618,7 +618,7 @@ def prepareBeds(config: dict) -> None:
             .cat(rejectTest, postmerge=False)\
             .sort()
         allRejects.saveas(outputRejectFname)
-    logUtils.info("Regions saved.")
+    logUtils.info("Bed preparation complete. Exiting.")
 
 
 if __name__ == "__main__":

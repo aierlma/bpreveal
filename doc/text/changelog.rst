@@ -7,6 +7,66 @@ see :doc:`breakingChanges`.
 BPReveal 5.x
 ------------
 
+BPReveal 5.1.x
+^^^^^^^^^^^^^^
+
+BPReveal 5.1.0, 2024-12-13
+''''''''''''''''''''''''''
+
+BREAKING CHANGES:
+    * Quite a bit of refactoring was done inside interpretUtils. While these
+      functions are not normally directly useful for end-users, any custom interpretation
+      pipeline is almost certainly going to need to be re-done. See the changes in
+      interpretFlat and interpretPisa to see how to use the new API. There's also a demo
+      of the new interpretation pipeline for custom metrics in ``doc/demos/testIsm.py``
+    * ``shap.py`` and ``interpretUtils.py`` have moved to the ``internal/`` directory.
+
+NEW FEATURES:
+    * Added the ability to include random mutations in corruptors in
+      :py:mod:`gaOptimize<bpreveal.gaOptimize>`. This is less useful
+      for GA work but gives a nice tool for making systematic
+      mutations (say, for marginalization).
+    * You can now provide custom metrics for shapping, instead of
+      just the built-in profile and counts metrics.
+    * You can use scanning ISM instead of shap to get importance scores
+      (though the implementation is very slow).
+
+ENHANCEMENTS:
+    * Added a way to completely silence all TensorFlow messages when using the batchers.
+      This should only be used after you've tested your workflow, since it will also
+      suppress all real errors. If TensorFlow 2.19 still emits megabytes of warnings,
+      I may add this as a general feature to the CLI, probably as a new verbosity level.
+    * Added a sans-serif option for all plots. This uses the Fira Sans font, which
+      I find pleasant.
+    * easyPredict can now use sequences that are longer than the model's input length.
+      In this case, it will make predictions across the whole range of valid output
+      and stitch them together to give you a single big output prediction.
+    * interpretFlat now includes the value of the metric at each location that was
+      interpreted in its output hdf5 file.
+    * Since PISA graphs don't show any lines for low-importance connections,
+      the color bar has been updated to be pure white within the region where
+      no lines are drawn.
+
+BUG FIXES:
+    * Added a check to make sure that the slices applied to PISA plots are valid,
+      previously a partial plot could be displayed if you sliced beyond the end of the
+      PISA data. This emits an error message, but does not crash to maintain backwards
+      compatibility. This will become a crash in 6.0.
+    * The Keras race condition when loading a model was fixed upstream, and so I have
+      removed the hacked solution from the BPReveal side.
+    * Set pisa plots to always display whole pixels on the edge instead of the previous
+      axis limit algorithm that could display half-pixels.
+    * The addition of interactive plotting had broken ``use-annotation-colors`` in PISA
+      graph generation. It now correctly colors the relevant lines again.
+    * The switch to keras 3 caused losses to be logged twice during training,
+      which filled up the window in showTrainingProgress. The extraneous losses
+      have been silenced.
+
+CONTRIBUTORS:
+    * Charles McAnany
+    * Julia Zeitlinger (plot design feedback)
+    * Melanie Weilert (custom interpretation metrics feedback)
+
 BPReveal 5.0.x
 ^^^^^^^^^^^^^^
 
@@ -15,6 +75,11 @@ BPReveal 5.0.2, 2024-11-06
 
 BUG FIXES:
     * Fixed a rare segfault when very large input datasets are used to train.
+      Thanks to Ivan for finding and helping to diagnose the bug!
+
+CONTRIBUTORS:
+    * Charles McAnany
+    * Ivan Qiu
 
 
 BPReveal 5.0.1, 2024-10-29
